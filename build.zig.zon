@@ -1,0 +1,8 @@
+.{
+    .name = .catengar,
+    .fingerprint = 0x836a9fe9cebaead7,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{ .native_sdk = .{ .path = ".tools/native" } },
+    .paths = .{ "src", "scripts", "assets", "build.zig", "build.zig.zon", "app.zon", "README.md" },
+}

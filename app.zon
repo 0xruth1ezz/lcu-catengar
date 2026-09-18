@@ -1,0 +1,19 @@
+.{
+    .id = "dev.catengar.lcu",
+    .name = "catengar",
+    .display_name = "catengar",
+    .version = "0.1.0",
+    .platforms = .{"windows"},
+    .capabilities = .{ "native_views", "gpu_surfaces", "tray" },
+    .permissions = .{"filesystem"},
+    .webview_layer = "exclude",
+    .shell = .{ .windows = .{.{
+        .label = "main",
+        .title = "catengar",
+        .width = 1120,
+        .height = 800,
+        .close_policy = "hide",
+        .restore_policy = "center_on_primary",
+        .views = .{.{ .label = "main-canvas", .kind = "gpu_surface", .fill = true }},
+    }} },
+}

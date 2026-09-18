@@ -1,0 +1,87 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      # Bump when changing compiler flags or the cache layout.
+      CACHE_VERSION: v1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set compiler cache directory
+        run: '"ZIG_GLOBAL_CACHE_DIR=$env:RUNNER_TEMP/zig-global-cache" >> $env:GITHUB_ENV'
+
+      - name: Cache pinned toolchain and Native SDK
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .tools/zig-x86_64-windows-0.16.0
+            .tools/native
+          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/bootstrap.ps1', 'scripts/patch-native.ps1') }}
+
+      - name: Install verified dependencies
+        run: ./scripts/bootstrap.ps1
+
+      - name: Restore Zig compiler and build caches
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/zig-global-cache
+            .zig-cache
+          key: zig-${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/bootstrap.ps1', 'build.zig', 'build.zig.zon', 'app.zon') }}-${{ hashFiles('src/**', 'assets/catengar.ico', 'assets/catengar.rc') }}
+          restore-keys: |
+            zig-${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/bootstrap.ps1', 'build.zig', 'build.zig.zon', 'app.zon') }}-
+            zig-${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Check Zig formatting
+        run: |
+          & .tools/zig-x86_64-windows-0.16.0/zig.exe fmt --check build.zig build.zig.zon app.zon src
+          if ($LASTEXITCODE) { throw 'Zig formatting check failed' }
+
+      - name: Run offline tests
+        run: |
+          & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-core --summary all
+          if ($LASTEXITCODE) { throw 'Core tests failed' }
+          & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-images --summary all
+          if ($LASTEXITCODE) { throw 'Image cache tests failed' }
+
+      - name: Test TLS and WebSocket reconnection offline
+        run: |
+          python scripts/test-transport.py
+          if ($LASTEXITCODE) { throw 'Transport fault tests failed' }
+
+      - name: Build Windows executables
+        run: |
+          & .tools/zig-x86_64-windows-0.16.0/zig.exe build -Doptimize=ReleaseSafe --summary all
+          if ($LASTEXITCODE) { throw 'Windows build failed' }
+
+      - name: Upload portable application
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: catengar-windows-x64-${{ github.sha }}
+          path: |
+            zig-out/bin/catengar.exe
+            zig-out/bin/catengar-diagnose.exe
+            README.md
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 14

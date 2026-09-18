@@ -1,0 +1,93 @@
+<column background="background" padding="24" gap="18">
+  <row cross="center" gap="12">
+    <column grow="1" gap="4">
+      <row gap="12" cross="center"><text size="heading">catengar</text><badge>极地助手</badge></row>
+      <text foreground="text_muted">把选择交给偏好，把注意力留给对局。</text>
+    </column>
+    <badge>{phaseLabel}</badge>
+    <button variant="outline" icon="refresh-cw" on-press="reconnect">重新连接</button>
+    <if test="{elevation_cancelled}"><button variant="primary" on-press="elevate">管理员重试</button></if>
+  </row>
+  <row cross="center" gap="12">
+    <text size="sm" foreground="text_muted">外观</text>
+    <button-group gap="6" label="快速切换主题">
+      <for each="themeOptions" as="style" key="id">
+        <toggle-button size="sm" selected="{style.selected}" on-toggle="set_theme:{style.id}" label="{style.name}">{style.name}</toggle-button>
+      </for>
+    </button-group>
+    <spacer grow="1"/>
+    <text size="sm" foreground="text_muted">即时切换 · 自动保存</text>
+  </row>
+  <row background="surface" radius="md" padding="12" gap="10" cross="center">
+    <if test="{snapshot.connected}"><icon name="check-circle" foreground="success" width="18" height="18"/></if>
+    <else><icon name="circle-dot" foreground="warning" width="18" height="18"/></else>
+    <text grow="1">{status}</text><text foreground="text_muted">LCU · 本机连接</text>
+  </row>
+  <row gap="16">
+    <column grow="1" background="surface" radius="lg" padding="18" gap="10">
+      <row cross="center" gap="10"><text grow="1" size="lg">自动接受对局</text><switch checked="{preferences.auto_accept}" on-toggle="toggle_accept" label="自动接受对局开关"/></row>
+      <text foreground="text_muted">匹配成功时自动确认 · 适用于所有队列</text>
+    </column>
+    <column grow="1" background="surface" radius="lg" padding="18" gap="10">
+      <row cross="center" gap="10"><text grow="1" size="lg">优先英雄自动选取</text><switch checked="{preferences.auto_pick}" on-toggle="toggle_pick" label="自动选取英雄开关"/></row>
+      <text foreground="text_muted">ARAM / MAYHEM · 仅换取更高优先级英雄</text>
+    </column>
+  </row>
+  <row gap="16" grow="1">
+    <column grow="1" background="surface" radius="lg" padding="18" gap="12">
+      <row cross="center"><text size="lg" grow="1">英雄库</text><text foreground="text_muted">来自当前客户端</text></row>
+      <search-field text="{query}" on-input="search" placeholder="搜索英雄名称或英文名…" label="搜索英雄"/>
+      <scroll grow="1" value="{library_scroll}" on-scroll="library_scrolled" label="英雄网格" overscroll="none">
+        <column>
+          <spacer height="{gridTop}"/>
+          <grid columns="{gridColumns}" gap="10" label="英雄卡片">
+            <for each="champions" as="c" key="id">
+              <stack height="96" background="surface_subtle" radius="md" label="{c.name}">
+                <toggle-button height="96" variant="ghost" radius="md" selected="{c.selected}" on-toggle="toggle_priority:{c.id}" disabled="{not c.selected and preferences.count >= 32}" label="{c.action_label}"/>
+                <column main="center" cross="center">
+                  <avatar image="{c.image}" source-x="{c.source_x}" source-y="{c.source_y}" source-width="128" source-height="128" width="80" height="80" radius="md" label="{c.name}"/>
+                </column>
+                <if test="{c.selected}">
+                  <row main="end" cross="start" padding="4">
+                    <stack width="22" height="22" background="accent" radius="xl" padding="4"><icon name="check" foreground="accent_text" label="已优先选择"/></stack>
+                  </row>
+                </if>
+              </stack>
+            </for>
+          </grid>
+          <spacer height="{gridBottom}"/>
+          <if test="{not hasChampions}"><column gap="12" padding="18"><icon name="download" width="28" height="28" foreground="text_muted"/><text wrap="true" foreground="text_muted">连接 League 客户端后，英雄名称和头像会自动出现在这里。</text></column></if>
+          <if test="{hasChampions and matchCount == 0}"><text foreground="text_muted">没有找到匹配的英雄</text></if>
+        </column>
+      </scroll>
+      <text foreground="text_muted" size="sm">{libraryLabel}</text>
+    </column>
+    <column grow="1" background="surface" radius="lg" padding="18" gap="12">
+      <row cross="center"><text size="lg" grow="1">我的优先顺序</text><badge>{preferences.count} / 32</badge></row>
+      <text foreground="text_muted">越靠上越优先 · 使用箭头调整顺序</text>
+      <scroll grow="1">
+        <column gap="8">
+          <for each="priorities" as="p" key="id">
+            <row cross="center" gap="10" background="surface_subtle" radius="md" padding="8">
+              <text foreground="accent">{pad(p.rank, 2)}</text><avatar image="{p.image}" source-x="{p.source_x}" source-y="{p.source_y}" source-width="128" source-height="128" width="32" height="32">{p.alias}</avatar>
+              <text grow="1">{p.name}</text>
+              <button icon="arrow-up" size="icon" variant="ghost" label="提高优先级" on-press="move_up:{p.id}" disabled="{p.rank == 1}"/>
+              <button icon="arrow-down" size="icon" variant="ghost" label="降低优先级" on-press="move_down:{p.id}" disabled="{p.rank == preferences.count}"/>
+              <button icon="x" size="icon" variant="ghost" label="移除英雄" on-press="remove:{p.id}"/>
+            </row>
+          </for>
+          <if test="{not hasPriority}"><column padding="24" gap="14"><icon name="arrow-up" width="30" height="30" foreground="text_muted"/><text>先添加你想玩的英雄</text><text foreground="text_muted" wrap="true">从左侧英雄库添加。没有设置偏好时，工具会保留客户端分配的英雄。</text></column></if>
+        </column>
+      </scroll>
+      <column background="surface_subtle" radius="md" padding="12" gap="6">
+        <row><text grow="1" foreground="text_muted">{queueLabel}</text><text foreground="accent">{currentLabel}</text></row>
+        <text foreground="text_muted" size="sm">可用池 {snapshot.bench_count} 位 · {transportLabel}</text>
+      </column>
+    </column>
+  </row>
+  <column gap="5">
+    <for each="logs" as="entry"><text size="sm" foreground="text_muted">{entry.text}</text></for>
+  </column>
+  <separator/>
+  <row cross="center" gap="14"><text size="sm" foreground="text_muted" grow="1">LCU 资源 · 英雄 {snapshot.champion_count} · 头像 {snapshot.icon_count} · 符文 {snapshot.perk_count} · 符文系 {snapshot.style_count}</text><text size="sm" foreground="text_muted">已接受 {snapshot.accepted} · 已选取 {snapshot.swapped}</text></row>
+</column>

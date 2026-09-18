@@ -1,0 +1,2 @@
+// The lowest icon resource ID is the Explorer executable icon.
+100 ICON "catengar.ico"
