@@ -21,6 +21,8 @@ var app_io: std.Io = undefined;
 var channel: native.ChannelHandle = undefined;
 var instance: @import("instance.zig").Instance = undefined;
 var native_start: ?*const fn (*anyopaque, *native.Runtime) anyerror!void = null;
+var native_runtime: ?*native.Runtime = null;
+var ime: @import("ime.zig").Bridge = .{};
 var portrait_loader: ?*portrait_worker.Worker = null;
 var portrait_channel: native.ChannelHandle = undefined;
 
@@ -187,6 +189,7 @@ fn notifyPortraits() bool {
     return portrait_channel.post("ready") != .closed;
 }
 fn frameMsg(model: *const Model, frame: native.platform.GpuFrame) ?Msg {
+    if (native_runtime) |runtime| ime.sync(runtime, frame);
     if (model.canvas_width == frame.size.width and model.canvas_height == frame.size.height) return null;
     return .{ .resized = frame.size };
 }
@@ -481,6 +484,7 @@ const tray_items = [_]native.TrayMenuItem{
     .{ .id = 2, .label = "完全退出", .command = "catengar.quit" },
 };
 fn startNative(context: *anyopaque, runtime: *native.Runtime) !void {
+    native_runtime = runtime;
     @import("app_icon.zig").applyWindow();
     const palette = themes.palette(service.preferences.theme);
     win.styleMainWindow(palette.dark, palette.surface);
@@ -519,6 +523,7 @@ fn prepareStartup(io: std.Io) StartupElevation {
     return .unnecessary;
 }
 pub fn main(init: std.process.Init) !void {
+    defer ime.deinit();
     app_io = init.io;
     const root = try win.dataDirectory(std.heap.page_allocator);
     defer std.heap.page_allocator.free(root);

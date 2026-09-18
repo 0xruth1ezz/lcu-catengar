@@ -11,6 +11,8 @@ pub const c = @cImport({
     @cInclude("shlobj.h");
     @cInclude("sddl.h");
     @cInclude("dwmapi.h");
+    @cInclude("imm.h");
+    @cInclude("commctrl.h");
 });
 pub fn mainWindow() c.HWND {
     var hwnd: c.HWND = null;

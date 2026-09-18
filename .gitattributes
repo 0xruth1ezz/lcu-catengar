@@ -1,0 +1,5 @@
+# Keep fresh Windows checkouts compatible with zig fmt --check.
+* text=auto eol=lf
+
+*.ico binary
+*.png binary

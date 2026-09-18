@@ -27,6 +27,14 @@ pub fn build(b: *std.Build) void {
     }) });
     image_tests.root_module.addImport("native_sdk", app.exe.root_module.import_table.get("native_sdk").?);
     b.step("test-images", "Check Native image cache invalidation").dependOn(&b.addRunArtifact(image_tests).step);
+    const ime_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/ime.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+        .link_libc = true,
+    }) });
+    ime_tests.root_module.addImport("native_sdk", app.exe.root_module.import_table.get("native_sdk").?);
+    b.step("test-ime", "Check input method focus and DPI positioning").dependOn(&b.addRunArtifact(ime_tests).step);
     const transport = b.addExecutable(.{ .name = "catengar-transport-test", .root_module = b.createModule(.{
         .root_source_file = b.path("src/transport_test.zig"),
         .target = b.graph.host,

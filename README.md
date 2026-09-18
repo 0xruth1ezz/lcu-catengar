@@ -88,6 +88,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Diagnose
 
 - `src/app.native`：原生界面。
 - `src/titlebar.zig`：自绘标题栏和红黄绿窗口按钮。
+- `src/ime.zig`：将画布输入焦点及光标位置同步给 Windows 输入法，定位候选栏并处理失焦清理；`zig build test-ime` 检查焦点与 DPI 坐标。
 - `src/main.zig`：UI 状态、消息、图片生命周期和 UAC 重启。
 - `src/champion_grid.zig` / `src/portraits.zig`：网格可视范围、连续滚动和共享头像图集。
 - `src/portrait_worker.zig` / `src/catalog.zig`：有界后台头像解码队列、目录内容标识和重连缓存复用。
@@ -116,6 +117,6 @@ UI 调试可使用 `zig build -Doptimize=ReleaseSafe -Dautomation=true`。Native
 
 ## GitHub CI
 
-`.github/workflows/build.yml` 在每次 push、pull request 和手动运行时执行 Windows 构建：格式检查 → 离线单元测试、图像缓存失效测试与 TLS/WebSocket 故障测试 → ReleaseSafe 编译 → 上传便携程序（保留 14 天）。不需要 League 客户端或任何账号密钥。故障测试使用运行器预装的 Python 标准库，不安装额外依赖；Zig 测试程序复用现有编译缓存。
+`.github/workflows/build.yml` 在每次 push、pull request 和手动运行时执行 Windows 构建：格式检查 → 离线单元测试、图像缓存失效测试、输入法焦点与 DPI 测试及 TLS/WebSocket 故障测试 → ReleaseSafe 编译 → 上传便携程序（保留 14 天）。不需要 League 客户端或任何账号密钥。故障测试使用运行器预装的 Python 标准库，不安装额外依赖；Zig 测试程序复用现有编译缓存。`.gitattributes` 固定文本使用 LF，避免 Windows 检出时的 CRLF 转换导致 `zig fmt --check` 失败。
 
 缓存分两层：固定版本 Zig/Native SDK 按 bootstrap 脚本内容缓存；Zig 全局编译缓存和项目 `.zig-cache` 按构建配置和源码内容缓存。源码修改时回退到相同构建配置的缓存，复用标准库、C++ 宿主和未变更的编译结果。文档修改可直接命中已有编译缓存；同一分支的新 push 会取消过时任务。Actions 固定到完整 commit SHA。

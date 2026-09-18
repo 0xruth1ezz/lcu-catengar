@@ -63,6 +63,8 @@ jobs:
           if ($LASTEXITCODE) { throw 'Core tests failed' }
           & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-images --summary all
           if ($LASTEXITCODE) { throw 'Image cache tests failed' }
+          & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-ime --summary all
+          if ($LASTEXITCODE) { throw 'Input method tests failed' }
 
       - name: Test TLS and WebSocket reconnection offline
         run: |
