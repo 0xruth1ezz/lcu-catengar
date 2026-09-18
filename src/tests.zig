@@ -135,6 +135,22 @@ test "theme settings preserve automation and migrate missing or unknown names" {
     }
 }
 
+test "theme changes replace the local settings file and survive reopening" {
+    var dir = testing.tmpDir(.{});
+    defer dir.cleanup();
+    const path = try std.fs.path.join(a, &.{ ".zig-cache", "tmp", &dir.sub_path, "settings.json" });
+    defer a.free(path);
+    var prefs = preferences();
+    prefs.auto_accept = true;
+    for (themes.presets) |preset| {
+        prefs.theme = preset;
+        try settings.save(a, testing.io, path, &prefs);
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, a, .limited(64 * 1024));
+        defer a.free(bytes);
+        try testing.expectEqualDeep(prefs, try settings.decode(a, bytes));
+    }
+}
+
 fn luminance(rgb: u24) f64 {
     var channels: [3]f64 = .{ @as(f64, @floatFromInt(rgb >> 16)) / 255, @as(f64, @floatFromInt((rgb >> 8) & 255)) / 255, @as(f64, @floatFromInt(rgb & 255)) / 255 };
     for (&channels) |*value| value.* = if (value.* <= 0.04045) value.* / 12.92 else std.math.pow(f64, (value.* + 0.055) / 1.055, 2.4);

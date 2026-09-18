@@ -7,6 +7,7 @@ pub fn build(b: *std.Build) void {
     options.addOption([]const u8, "preview_catalog", b.option([]const u8, "preview-catalog", "Read-only UI preview using a local catalog fixture (no LCU connection or settings writes)") orelse "");
     app.exe.root_module.addOptions("catengar_options", options);
     app.exe.root_module.linkSystemLibrary("winhttp", .{});
+    app.exe.root_module.linkSystemLibrary("dwmapi", .{});
     app.exe.root_module.addAnonymousImport("catengar_icon", .{ .root_source_file = b.path("assets/catengar.ico") });
     app.exe.root_module.addWin32ResourceFile(.{ .file = b.path("assets/catengar.rc"), .include_paths = &.{b.path("assets")} });
     const core_tests = b.addTest(.{ .root_module = b.createModule(.{

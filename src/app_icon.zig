@@ -22,10 +22,7 @@ pub fn prepare(allocator: std.mem.Allocator, io: std.Io, root: []const u8) ![]co
 pub fn applyWindow() void {
     // The pinned Windows host does not set WM_SETICON from AppInfo.icon_path.
     // Its main HWND exists before the application's start callback.
-    const hwnd = c.FindWindowW(std.unicode.utf8ToUtf16LeStringLiteral("NativeSdkWindowsHost"), std.unicode.utf8ToUtf16LeStringLiteral("catengar")) orelse return;
-    var process_id: c.DWORD = 0;
-    _ = c.GetWindowThreadProcessId(hwnd, &process_id);
-    if (process_id != c.GetCurrentProcessId()) return;
+    const hwnd = win.mainWindow() orelse return;
     const module = c.GetModuleHandleW(null);
     const resource: [*c]const u16 = @ptrFromInt(100);
     const dpi = c.GetDpiForWindow(hwnd);

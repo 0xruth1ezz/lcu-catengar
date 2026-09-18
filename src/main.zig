@@ -10,6 +10,7 @@ const portraits = @import("portraits.zig");
 const portrait_worker = @import("portrait_worker.zig");
 const preview_catalog = @import("catengar_options").preview_catalog;
 const toasts = @import("toasts.zig");
+const titlebar = @import("titlebar.zig");
 const toast_timer_key = 71;
 pub const panic = std.debug.FullPanic(native.debug.capturePanic);
 const canvas = native.canvas;
@@ -28,6 +29,8 @@ pub const ThemeRow = struct { id: u8, name: []const u8, selected: bool };
 pub const Model = struct {
     snapshot: t.Snapshot = .{},
     preferences: t.Preferences = .{},
+    theme_picker_open: bool = false,
+    titlebar_hover: bool = false,
     has_cjk_font: bool = false,
     search: canvas.TextBuffer(128) = .{},
     library_scroll: f32 = 0,
@@ -56,11 +59,11 @@ pub const Model = struct {
         }
         return rows;
     }
+    pub fn themeLabel(self: *const Model) []const u8 {
+        return self.preferences.theme.label();
+    }
     pub fn query(self: *const Model) []const u8 {
         return self.search.text();
-    }
-    pub fn hasPriority(self: *const Model) bool {
-        return self.preferences.count > 0;
     }
     pub fn hasChampions(self: *const Model) bool {
         return self.snapshot.champion_count > 0;
@@ -131,10 +134,6 @@ pub const Model = struct {
         inline for (pairs) |pair| if (std.mem.eql(u8, phase, pair[0])) return pair[1];
         return phase;
     }
-    pub fn transportLabel(self: *const Model) []const u8 {
-        if (!self.snapshot.connected) return "等待连接";
-        return if (self.snapshot.websocket) "WebSocket 实时更新" else "REST 降级模式";
-    }
     pub fn queueLabel(self: *const Model) []const u8 {
         return switch (self.snapshot.queue_id) {
             450 => "ARAM",
@@ -159,7 +158,13 @@ pub const Model = struct {
 };
 pub const Msg = union(enum) {
     set_theme: u8,
+    toggle_theme_picker,
+    close_theme_picker,
     show_window,
+    hide_window,
+    minimize_window,
+    zoom_window,
+    titlebar_hover: bool,
     quit,
     toggle_accept,
     toggle_pick,
@@ -221,13 +226,28 @@ fn requestElevation(model: *Model, fx: *Effects) void {
 pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
     var changed = false;
     switch (msg) {
+        .toggle_theme_picker => model.theme_picker_open = !model.theme_picker_open,
+        .close_theme_picker => model.theme_picker_open = false,
         .set_theme => |id| {
             const preset = std.enums.fromInt(themes.Preset, id) orelse return;
+            model.theme_picker_open = false;
             if (model.preferences.theme == preset) return;
             model.preferences.theme = preset;
+            const palette = themes.palette(preset);
+            win.styleMainWindow(palette.dark, palette.surface);
             changed = true;
         },
         .show_window => fx.showWindow("main"),
+        .hide_window => {
+            model.titlebar_hover = false;
+            fx.hideWindow("main");
+        },
+        .minimize_window => {
+            model.titlebar_hover = false;
+            fx.minimizeWindow("main");
+        },
+        .zoom_window => win.toggleMainWindowZoom(),
+        .titlebar_hover => |hovered| model.titlebar_hover = hovered,
         .quit => fx.quitApp(),
         .toggle_accept => {
             model.preferences.auto_accept = !model.preferences.auto_accept;
@@ -268,7 +288,7 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
         .resized => |size| {
             model.canvas_width = size.width;
             model.canvas_height = size.height;
-            model.library_height = @max(grid.stride, size.height - 480);
+            model.library_height = @max(grid.stride, size.height - 480 - titlebar.height - 1);
         },
         .toast_timer => |timer| {
             if (timer.outcome == .fired) model.toasts.expire(win.now()) else model.toasts.count = 0;
@@ -462,6 +482,8 @@ const tray_items = [_]native.TrayMenuItem{
 };
 fn startNative(context: *anyopaque, runtime: *native.Runtime) !void {
     @import("app_icon.zig").applyWindow();
+    const palette = themes.palette(service.preferences.theme);
+    win.styleMainWindow(palette.dark, palette.surface);
     // Native 6b053188's Runtime.initAt skips defaults larger than 4096 bytes,
     // including the status-item register. Initialize its small live headers;
     // leave unused menu storage untouched. Otherwise poisoned active flags
@@ -476,7 +498,26 @@ fn startNative(context: *anyopaque, runtime: *native.Runtime) !void {
     runtime.status_item_count = 0;
     if (native_start) |start| try start(context, runtime);
 }
-const scene: native.ShellConfig = .{ .windows = &.{.{ .label = "main", .title = "catengar", .width = 1120, .height = 800, .close_policy = .hide, .views = &.{.{ .label = "main-canvas", .kind = .gpu_surface, .fill = true }} }} };
+fn mainView(ui: *canvas.Ui(Msg), model: *const Model) canvas.Ui(Msg).Node {
+    return ui.column(.{ .grow = 1, .style_tokens = .{ .background = .background } }, .{
+        titlebar.build(Msg, ui, model.titlebar_hover),
+        canvas.CompiledMarkupView(Model, Msg, @embedFile("app.native")).build(ui, model),
+    });
+}
+const scene: native.ShellConfig = .{ .windows = &.{.{ .label = "main", .title = "catengar", .width = 1120, .height = 800, .titlebar = .chromeless, .min_width = 880, .min_height = 720, .close_policy = .hide, .views = &.{.{ .label = "main-canvas", .kind = .gpu_surface, .fill = true }} }} };
+const StartupElevation = enum { unnecessary, cancelled, restarting };
+fn prepareStartup(io: std.Io) StartupElevation {
+    if (preview_catalog.len > 0 or win.isAdmin()) return .unnecessary;
+    // Decide before creating ANY window, tray icon, or service worker. The
+    // elevated process is the only one that should ever become visible.
+    // No-client and transient discovery errors still open a usable normal UI.
+    var credentials = @import("auth.zig").discover(std.heap.page_allocator, io) catch |err| {
+        if (err != error.AdminRequired) return .unnecessary;
+        return if (win.elevate()) .restarting else .cancelled;
+    };
+    @memset(std.mem.asBytes(&credentials), 0);
+    return .unnecessary;
+}
 pub fn main(init: std.process.Init) !void {
     app_io = init.io;
     const root = try win.dataDirectory(std.heap.page_allocator);
@@ -488,6 +529,10 @@ pub fn main(init: std.process.Init) !void {
     };
     instance = (try @import("instance.zig").Instance.acquire(std.heap.page_allocator, init.io, root, handoff)) orelse return;
     defer instance.deinit();
+    // Single-instance activation must precede UAC, so opening an already
+    // running app only restores its window without another permission prompt.
+    const startup_elevation = prepareStartup(init.io);
+    if (startup_elevation == .restarting) return;
     service = try std.heap.page_allocator.create(Service);
     service.* = .{};
     defer std.heap.page_allocator.destroy(service);
@@ -518,12 +563,16 @@ pub fn main(init: std.process.Init) !void {
             .activation_command = "catengar.show",
             .items = &tray_items,
         },
-        .view = canvas.CompiledMarkupView(Model, Msg, @embedFile("app.native")).build,
+        .view = mainView,
     });
     defer app.destroy();
     defer if (portrait_loader) |loader| loader.destroy();
     defer app.model.portraits.deinit(std.heap.page_allocator);
     app.model.preferences = service.preferences;
+    // Cancelling the startup prompt opens the normal window exactly once.
+    // The first auth watcher update must not immediately prompt a second time.
+    app.model.elevation_attempted = startup_elevation == .cancelled;
+    app.model.elevation_cancelled = startup_elevation == .cancelled;
     app.model.has_cjk_font = font_bytes != null;
     service.copy(&app.model.snapshot);
     if (preview_catalog.len > 0) {

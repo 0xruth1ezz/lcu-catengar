@@ -1,4 +1,4 @@
-<column background="background" padding="24" gap="18">
+<column grow="1" background="background" padding="24" gap="18">
   <row cross="center" gap="12">
     <column grow="1" gap="4">
       <row gap="12" cross="center"><text size="heading">catengar</text><badge>极地助手</badge></row>
@@ -9,14 +9,18 @@
     <if test="{elevation_cancelled}"><button variant="primary" on-press="elevate">管理员重试</button></if>
   </row>
   <row cross="center" gap="12">
-    <text size="sm" foreground="text_muted">外观</text>
-    <button-group gap="6" label="快速切换主题">
-      <for each="themeOptions" as="style" key="id">
-        <toggle-button size="sm" selected="{style.selected}" on-toggle="set_theme:{style.id}" label="{style.name}">{style.name}</toggle-button>
-      </for>
-    </button-group>
     <spacer grow="1"/>
-    <text size="sm" foreground="text_muted">即时切换 · 自动保存</text>
+    <text size="sm" foreground="text_muted">外观</text>
+    <stack width="200">
+      <select on-press="toggle_theme_picker" label="外观主题">{themeLabel}</select>
+      <if test="{theme_picker_open}">
+        <dropdown-menu anchor="below" anchor-alignment="stretch" on-dismiss="close_theme_picker">
+          <for each="themeOptions" as="style" key="id">
+            <menu-item selected="{style.selected}" on-press="set_theme:{style.id}">{style.name}</menu-item>
+          </for>
+        </dropdown-menu>
+      </if>
+    </stack>
   </row>
   <row background="surface" radius="md" padding="12" gap="10" cross="center">
     <if test="{snapshot.connected}"><icon name="check-circle" foreground="success" width="18" height="18"/></if>
@@ -33,9 +37,9 @@
       <text foreground="text_muted">ARAM / MAYHEM · 仅换取更高优先级英雄</text>
     </column>
   </row>
-  <row gap="16" grow="1">
-    <column grow="1" background="surface" radius="lg" padding="18" gap="12">
-      <row cross="center"><text size="lg" grow="1">英雄库</text><text foreground="text_muted">来自当前客户端</text></row>
+  <row gap="24" grow="1" background="surface" radius="lg" padding="18" label="英雄选择">
+    <column grow="1" gap="12">
+      <row cross="center"><text size="lg" grow="1">英雄库</text></row>
       <search-field text="{query}" on-input="search" placeholder="搜索英雄名称或英文名…" label="搜索英雄"/>
       <scroll grow="1" value="{library_scroll}" on-scroll="library_scrolled" label="英雄网格" overscroll="none">
         <column>
@@ -62,9 +66,9 @@
       </scroll>
       <text foreground="text_muted" size="sm">{libraryLabel}</text>
     </column>
-    <column grow="1" background="surface" radius="lg" padding="18" gap="12">
+    <column width="1" background="border"/>
+    <column grow="1" gap="12">
       <row cross="center"><text size="lg" grow="1">我的优先顺序</text><badge>{preferences.count} / 32</badge></row>
-      <text foreground="text_muted">越靠上越优先 · 使用箭头调整顺序</text>
       <scroll grow="1">
         <column gap="8">
           <for each="priorities" as="p" key="id">
@@ -76,12 +80,11 @@
               <button icon="x" size="icon" variant="ghost" label="移除英雄" on-press="remove:{p.id}"/>
             </row>
           </for>
-          <if test="{not hasPriority}"><column padding="24" gap="14"><icon name="arrow-up" width="30" height="30" foreground="text_muted"/><text>先添加你想玩的英雄</text><text foreground="text_muted" wrap="true">从左侧英雄库添加。没有设置偏好时，工具会保留客户端分配的英雄。</text></column></if>
         </column>
       </scroll>
       <column background="surface_subtle" radius="md" padding="12" gap="6">
         <row><text grow="1" foreground="text_muted">{queueLabel}</text><text foreground="accent">{currentLabel}</text></row>
-        <text foreground="text_muted" size="sm">可用池 {snapshot.bench_count} 位 · {transportLabel}</text>
+        <text foreground="text_muted" size="sm">可用池 {snapshot.bench_count} 位</text>
       </column>
     </column>
   </row>

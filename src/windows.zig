@@ -10,7 +10,34 @@ pub const c = @cImport({
     @cInclude("shellapi.h");
     @cInclude("shlobj.h");
     @cInclude("sddl.h");
+    @cInclude("dwmapi.h");
 });
+pub fn mainWindow() c.HWND {
+    var hwnd: c.HWND = null;
+    _ = c.EnumThreadWindows(c.GetCurrentThreadId(), findMainWindow, @bitCast(@intFromPtr(&hwnd)));
+    return hwnd;
+}
+fn findMainWindow(hwnd: c.HWND, context: c.LPARAM) callconv(.winapi) c.BOOL {
+    var title: [64]u16 = undefined;
+    const len = c.GetWindowTextW(hwnd, &title, title.len);
+    if (len != 8 or !std.mem.eql(u16, title[0..8], std.unicode.utf8ToUtf16LeStringLiteral("catengar"))) return 1;
+    const result: *c.HWND = @ptrFromInt(@as(usize, @bitCast(context)));
+    result.* = hwnd;
+    return 0;
+}
+pub fn styleMainWindow(dark: bool, rgb: u24) void {
+    const hwnd = mainWindow() orelse return;
+    const dark_mode: c.BOOL = if (dark) 1 else 0;
+    const round_corners: c.DWORD = 2; // DWMWCP_ROUND, ignored on older Windows.
+    const border: c.COLORREF = (@as(u32, rgb & 255) << 16) | (@as(u32, (rgb >> 8) & 255) << 8) | (rgb >> 16);
+    _ = c.DwmSetWindowAttribute(hwnd, 20, &dark_mode, @sizeOf(c.BOOL));
+    _ = c.DwmSetWindowAttribute(hwnd, 33, &round_corners, @sizeOf(c.DWORD));
+    _ = c.DwmSetWindowAttribute(hwnd, 34, &border, @sizeOf(c.COLORREF));
+}
+pub fn toggleMainWindowZoom() void {
+    const hwnd = mainWindow() orelse return;
+    _ = c.PostMessageW(hwnd, c.WM_SYSCOMMAND, if (c.IsZoomed(hwnd) != 0) c.SC_RESTORE else c.SC_MAXIMIZE, 0);
+}
 pub const Mutex = struct {
     value: c.SRWLOCK = std.mem.zeroes(c.SRWLOCK),
     pub fn lock(self: *Mutex) void {
