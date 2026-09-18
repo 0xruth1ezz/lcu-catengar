@@ -1,0 +1,7 @@
+.tools/
+.zig-cache/
+zig-out/
+.native/
+*.pdb
+*.log
+artifacts/
