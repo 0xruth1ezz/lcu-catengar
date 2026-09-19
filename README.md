@@ -21,6 +21,8 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Test
 
 构建后直接打开 `zig-out/bin/catengar.exe`，不需要安装 Zig。分发时必须将 `catengar.exe` 与 `catengar-auth.exe` 放在同一目录；`catengar-diagnose.exe` 是可选的命令行诊断工具。首次构建需要网络下载 Zig 与 Native SDK，之后可以离线构建。SDK 固定在 `6b053188dc8ac415f602618be12717889cb0a986`，下载归档校验 SHA-256；不需要 npm。
 
+三个分发程序统一使用 `x86_64-windows-gnu` 与 `baseline` CPU 编译，普通构建也默认采用此配置。禁止按开发机或 CI 的原生 CPU 生成分发程序，避免 AMD 专有的 SSE4a 等指令导致其他 x64 电脑启动时出现 `Illegal instruction`。`src/portable_target.zig` 在编译期检查三个入口；`zig build test-target` 验证目标平台和 CPU 基线。
+
 英雄详情的「haidou.pro」Tab 需要系统安装 Microsoft Edge WebView2 Runtime，分发时一并保留构建输出中的 `WebView2Loader.dll` 和 `WebView2-LICENSE.txt`。无法启动内嵌网页时，浮窗提示安装 Runtime，并提供重试和「浏览器打开」；自动选人功能仍可使用。海斗网页使用公共 HTTPS 地址，与 LCU 通信分离，不发送本地客户端认证信息。
 
 1. 打开 League 客户端和工具。工具通过隐藏的 PowerShell 子进程读取 `LeagueClientUx.exe` 的命令行，获取 `--app-port` 和 `--remoting-auth-token`。
@@ -154,6 +156,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Diagnose
 - `src/window_state.zig`：记录真实 Win32 窗口位置和尺寸，仅首次显示前恢复；`zig build test-window` 验证移动、隐藏、最小化与位置恢复。
 - `src/tests.zig`：离线协议与自动化测试。
 - `src/auth_broker_test.zig` / `src/auth_fixture.zig`：`zig build test-auth` 使用假凭据验证管道通信、身份拒绝、token 刷新、断开退出与读取取消；不请求 UAC、不读取真实认证，测试助手不打包。
+- `scripts/test-startup.py`：构建后运行 `python scripts/test-startup.py`，将主程序及 WebView2 加载器复制到含空格和特殊字符的临时目录，使用隔离配置关闭自动接受和选人，验证窗口显示且启动后持续运行。此测试不携带管理员助手，不请求 UAC；结束后只停止测试进程并清理临时目录。可通过 `--build-dir` 检查指定构建。
 - `scripts/test-updater.ps1`：运行 `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/test-updater.ps1`，在临时目录用模拟 release 元数据、ZIP 和测试程序验证版本/摘要/文件清单拒绝、替换、文件占用回滚、确认后等待父进程退出及重新启动。不连接真实 LCU、不修改真实 release 或已安装程序。
 - `scripts/test-transport.py` / `src/transport_test.zig`：本地 TLS/WAMP 故障测试。运行 `python scripts/test-transport.py`，仅需 Python 标准库和已安装的 Zig；模拟拒绝在 REST 连接上升级 WebSocket、空闲连接取消、远端断线、token 更新、端口/PID 更换和重订阅，不读取真实 LCU 认证。`scripts/fixtures/loopback.pem` 是公开的自签名测试证书及测试密钥，仅供这些离线测试使用。
 
@@ -171,7 +174,7 @@ UI 调试可使用 `zig build -Doptimize=ReleaseSafe -Dautomation=true`。Native
 
 ## GitHub CI
 
-`.github/workflows/build.yml` 在每次 push、pull request 和手动运行时执行 Windows 构建：格式检查 → 离线单元测试、更新器集成与事务测试、图像缓存失效测试、输入法焦点与 DPI 测试、窗口位置测试、认证助手 IPC 测试及 TLS/WebSocket 故障测试 → ReleaseSafe 编译 → 上传便携程序（保留 14 天）。不需要 League 客户端或任何账号密钥。更新器测试使用系统 Windows PowerShell；传输故障测试使用运行器预装的 Python 标准库，不安装额外依赖；Zig 测试程序复用现有编译缓存。`.gitattributes` 固定文本使用 LF，避免 Windows 检出时的 CRLF 转换导致 `zig fmt --check` 失败。
+`.github/workflows/build.yml` 在每次 push、pull request 和手动运行时执行 Windows 构建：格式检查 → CPU 基线检查、离线单元测试、更新器集成与事务测试、图像缓存失效测试、输入法焦点与 DPI 测试、窗口位置测试、认证助手 IPC 测试及 TLS/WebSocket 故障测试 → ReleaseSafe 通用 x64 编译 → 真实窗口启动测试 → 上传便携程序（保留 14 天）。发布工作流也执行 CPU 基线和启动检查。不需要 League 客户端或任何账号密钥。更新器测试使用系统 Windows PowerShell；传输故障和启动测试使用运行器预装的 Python 标准库，不安装额外依赖；Zig 测试程序复用现有编译缓存。`.gitattributes` 固定文本使用 LF，避免 Windows 检出时的 CRLF 转换导致 `zig fmt --check` 失败。
 
 缓存分两层：固定版本 Zig/Native SDK 按 bootstrap 脚本内容缓存；Zig 全局编译缓存和项目 `.zig-cache` 按构建配置和源码内容缓存。源码修改时回退到相同构建配置的缓存，复用标准库、C++ 宿主和未变更的编译结果。文档修改可直接命中已有编译缓存；同一分支的新 push 会取消过时任务。Actions 固定到完整 commit SHA。
 

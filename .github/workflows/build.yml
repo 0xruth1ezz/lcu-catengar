@@ -64,6 +64,8 @@ jobs:
 
       - name: Run offline tests
         run: |
+          & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-target --summary all
+          if ($LASTEXITCODE) { throw 'Portable CPU target check failed' }
           powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/test-updater.ps1
           if ($LASTEXITCODE) { throw 'Updater tests failed' }
           & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-core --summary all
@@ -84,8 +86,13 @@ jobs:
 
       - name: Build Windows executables
         run: |
-          & .tools/zig-x86_64-windows-0.16.0/zig.exe build -Doptimize=ReleaseSafe --summary all
+          & .tools/zig-x86_64-windows-0.16.0/zig.exe build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu -Dcpu=baseline --summary all
           if ($LASTEXITCODE) { throw 'Windows build failed' }
+
+      - name: Smoke-test portable startup
+        run: |
+          python scripts/test-startup.py
+          if ($LASTEXITCODE) { throw 'Portable startup test failed' }
 
       - name: Upload portable application
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

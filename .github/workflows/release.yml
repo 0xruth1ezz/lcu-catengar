@@ -100,15 +100,20 @@ jobs:
         run: |
           powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/test-updater.ps1
           if ($LASTEXITCODE) { throw 'Updater tests failed' }
-          & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-core test-images test-ime test-window test-auth --summary all
+          & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-target test-core test-images test-ime test-window test-auth --summary all
           if ($LASTEXITCODE) { throw 'Offline tests failed' }
           python scripts/test-transport.py
           if ($LASTEXITCODE) { throw 'Transport fault tests failed' }
 
       - name: Build Windows executables
         run: |
-          & .tools/zig-x86_64-windows-0.16.0/zig.exe build -Doptimize=ReleaseSafe --summary all
+          & .tools/zig-x86_64-windows-0.16.0/zig.exe build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu -Dcpu=baseline --summary all
           if ($LASTEXITCODE) { throw 'Windows build failed' }
+
+      - name: Smoke-test portable startup
+        run: |
+          python scripts/test-startup.py
+          if ($LASTEXITCODE) { throw 'Portable startup test failed' }
 
       - name: Create versioned portable ZIP
         id: package

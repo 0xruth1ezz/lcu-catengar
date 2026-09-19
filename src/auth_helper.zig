@@ -1,4 +1,7 @@
 const std = @import("std");
+comptime {
+    @import("portable_target.zig").requireBaseline();
+}
 const win = @import("windows.zig");
 const c = win.c;
 const discovery = @import("auth_discovery.zig");

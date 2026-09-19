@@ -2,8 +2,19 @@ const std = @import("std");
 const native = @import("native_sdk");
 
 pub fn build(b: *std.Build) void {
+    // The SDK resolves its own standard target options. Supply portable defaults
+    // before it does so; an implicit native CPU makes CI binaries host-specific.
+    if (!b.user_input_options.contains("target")) _ = b.addUserInputOption("target", "x86_64-windows-gnu") catch @panic("OOM");
+    if (!b.user_input_options.contains("cpu")) _ = b.addUserInputOption("cpu", "baseline") catch @panic("OOM");
     const sdk = b.dependency("native_sdk", .{});
     const app = native.addAppArtifacts(b, sdk, .{ .name = "catengar" });
+    const release_target = app.exe.root_module.resolved_target.?;
+    const target_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/portable_target.zig"),
+        .target = release_target,
+        .optimize = .ReleaseSafe,
+    }) });
+    b.step("test-target", "Verify the distributed Windows x64 CPU baseline").dependOn(&b.addRunArtifact(target_tests).step);
     b.getInstallStep().dependOn(&b.addInstallFile(sdk.path("third_party/webview2/LICENSE.txt"), "bin/WebView2-LICENSE.txt").step);
     const options = b.addOptions();
     const version_text = @import("app.zon").version;
@@ -24,7 +35,7 @@ pub fn build(b: *std.Build) void {
     app.exe.root_module.addWin32ResourceFile(.{ .file = b.path("assets/catengar.rc"), .include_paths = &.{b.path("assets")} });
     const helper = b.addExecutable(.{ .name = "catengar-auth", .win32_manifest = b.path("assets/catengar-auth.manifest"), .root_module = b.createModule(.{
         .root_source_file = b.path("src/auth_helper.zig"),
-        .target = b.graph.host,
+        .target = release_target,
         .optimize = .ReleaseSafe,
         .link_libc = true,
     }) });
@@ -96,7 +107,7 @@ pub fn build(b: *std.Build) void {
     b.step("test-transport", "Loopback transport fault tests; invoke via scripts/test-transport.py").dependOn(&transport_run.step);
     const diag = b.addExecutable(.{ .name = "catengar-diagnose", .root_module = b.createModule(.{
         .root_source_file = b.path("src/diagnose.zig"),
-        .target = b.graph.host,
+        .target = release_target,
         .optimize = .ReleaseSafe,
         .link_libc = true,
     }) });

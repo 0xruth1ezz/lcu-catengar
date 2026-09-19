@@ -1,4 +1,7 @@
 const std = @import("std");
+comptime {
+    @import("portable_target.zig").requireBaseline();
+}
 const auth = @import("auth.zig");
 const lcu = @import("lcu.zig");
 const logic = @import("logic.zig");

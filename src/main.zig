@@ -1,4 +1,7 @@
 const std = @import("std");
+comptime {
+    @import("portable_target.zig").requireBaseline();
+}
 const native = @import("native_sdk");
 const runner = @import("runner");
 const t = @import("types.zig");
