@@ -158,7 +158,7 @@ UI 调试可使用 `zig build -Doptimize=ReleaseSafe -Dautomation=true`。Native
 
 在 GitHub 的 **Actions → Create release → Run workflow** 中选择默认分支运行 `.github/workflows/release.yml`：
 
-- `version` 可选：填写 `0.2.0` 或 `v0.2.0`，优先使用指定版本。必须大于 `app.zon` 中的当前版本；只接受三段数字正式版本，每段不超过 65535（Windows 版本资源限制）。
+- `version` 可选：填写 `0.2`、`v0.2`、`0.2.0` 或 `v0.2.0`，优先使用指定版本。省略补丁号时自动补 `0`，例如 `v0.2` 统一生成版本 `0.2.0`、标签 `v0.2.0` 和附件 `catengar-v0.2.0-windows-x64.zip`。版本必须大于 `app.zon` 中的当前版本；只接受两段或三段数字正式版本，每段不超过 65535（Windows 版本资源限制）。
 - 留空 `version` 时，按 `bump` 自动升级：默认 `patch`（`0.1.0 → 0.1.1`）；也可选 `minor`（`0.1.0 → 0.2.0`）或 `major`（`0.1.0 → 1.0.0`）。
 
 也可以使用 GitHub CLI：
@@ -168,6 +168,8 @@ UI 调试可使用 `zig build -Doptimize=ReleaseSafe -Dautomation=true`。Native
 gh workflow run release.yml
 # 指定版本；此时忽略 bump
 gh workflow run release.yml -f version=0.2.0
+# 简写版本会补齐为 0.2.0
+gh workflow run release.yml -f version=v0.2
 # 自动升级 minor
 gh workflow run release.yml -f bump=minor
 ```

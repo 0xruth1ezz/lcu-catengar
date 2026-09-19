@@ -22,9 +22,11 @@ VERSION_PATTERN = re.compile(r'(?m)^(\s*\.version\s*=\s*")([^"\r\n]+)(",?\s*)$')
 
 def parse_version(value):
     value = value.strip().removeprefix("v")
-    if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", value):
-        raise ValueError("Use a stable version such as 0.2.0 or v0.2.0 (major.minor.patch).")
+    if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*))?", value):
+        raise ValueError("Use a stable version such as v0.2 or 0.2.0 (major.minor or major.minor.patch).")
     parts = tuple(map(int, value.split(".")))
+    if len(parts) == 2:
+        parts += (0,)
     if any(part > 65535 for part in parts):
         raise ValueError("Windows executable version components cannot exceed 65535.")
     return parts
@@ -243,7 +245,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     prepare_parser = commands.add_parser("prepare", help="Commit the version, tag, and create/reuse a draft")
-    prepare_parser.add_argument("--version", default=os.environ.get("RELEASE_VERSION", ""))
+    prepare_parser.add_argument("--version", default=os.environ.get("RELEASE_VERSION", ""),
+                                help="Optional version, e.g. v0.2 or 0.2.0; missing patch defaults to 0")
     prepare_parser.add_argument("--bump", choices=("patch", "minor", "major"), default="patch")
     package_parser = commands.add_parser("package", help="Zip the three executables and README")
     package_parser.add_argument("--version", required=True)

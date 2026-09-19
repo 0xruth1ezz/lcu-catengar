@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Optional version (for example 0.2.0 or v0.2.0); blank = automatic bump'
+        description: 'Optional version (e.g. v0.2 or 0.2.0; missing patch = 0); blank = automatic bump'
         required: false
         type: string
       bump:

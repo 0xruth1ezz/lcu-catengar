@@ -21,9 +21,15 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(release.next_version("0.1.0", " v0.3.4 ", "major"), "0.3.4")
         self.assertEqual(release.next_version("0.1.0", " "), "0.1.1")
 
+    def test_short_versions_normalize_to_three_components(self):
+        for value in ("v0.2", "0.2", " v0.2 ", "0.2.0", "v0.2.0"):
+            with self.subTest(value=value):
+                self.assertEqual(release.next_version("0.1.0", value, "major"), "0.2.0")
+
     def test_invalid_or_non_increasing_versions(self):
-        for value in ("0.1.0", "0.0.9", "0.2", "01.2.3", "1.2.3-beta.1", "1.2.3+abc",
-                      "1.2.3\ninjected=true", "--help", "65536.0.0"):
+        for value in ("0.1.0", "v0.1", "0.0.9", "0", "v", "0.2.", "0.2.0.0", "0.02",
+                      "01.2.3", "1.2.3-beta.1", "1.2.3+abc", "1.2.3\ninjected=true", "--help",
+                      "65536.0.0", "65536.0"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 release.next_version("0.1.0", value)
         with self.assertRaises(ValueError):
@@ -157,12 +163,23 @@ class PrepareTests(ReleaseFilesFixture):
         self.assertEqual(release.git(self.remote, "rev-parse", "v0.1.1^{commit}"), first["commit"])
 
     def test_explicit_version_and_retry_after_another_release(self):
-        first = self.prepare(requested="v0.2.0")
+        first = self.prepare(requested="v0.2")
         second = self.prepare(run_id="124", requested="0.3.0")
         retried = self.prepare(requested="0.2.0", root=self.clone("retry"))
         self.assertEqual(first, retried)
         self.assertEqual(release.git(self.remote, "rev-parse", "main"), second["commit"])
         self.assertEqual(self.api.creates, 2)
+
+    def test_short_version_produces_canonical_tag_resources_and_asset(self):
+        result = self.prepare(requested="v0.2")
+        self.assertEqual(result["version"], "0.2.0")
+        self.assertEqual(result["tag"], "v0.2.0")
+        release.verify_version(self.root, "0.2.0")
+        archive = release.package(self.root, "0.2", self.binaries(), Path(self.directory.name) / "output")
+        self.assertEqual(archive.name, "catengar-v0.2.0-windows-x64.zip")
+        release.upload(self.root, "fixture/catengar", "123", result["tag"], archive)
+        self.assertEqual(self.api.uploads[0][2], "v0.2.0")
+        self.assertEqual(self.api.uploads[0][3], str(archive))
 
     def test_retry_after_tag_push_but_before_draft_creation(self):
         self.api.fail_create = True
