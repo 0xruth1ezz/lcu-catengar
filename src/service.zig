@@ -15,7 +15,7 @@ pub const Service = struct {
     prefs_version: u64 = 0,
     stop: std.atomic.Value(bool) = .init(false),
     reconnect: std.atomic.Value(bool) = .init(false),
-    needs_admin: std.atomic.Value(bool) = .init(false),
+    auth_retry: std.atomic.Value(bool) = .init(false),
     thread: ?std.Thread = null,
     notify: ?*const fn () bool = null,
     root: []const u8 = "",
@@ -147,8 +147,13 @@ pub const Service = struct {
         var next_metadata: u64 = 0;
         while (!self.stop.load(.acquire)) {
             self.persist(io, &seen_version, state);
+            if (self.auth_retry.swap(false, .acq_rel)) watcher.requestHelper();
             var identity = watcher.read();
             defer @memset(std.mem.asBytes(&identity), 0);
+            state.auth_retry_available = switch (identity.status) {
+                .permission_required, .helper_missing, .helper_failed => true,
+                else => false,
+            };
             const changed = recovery.changed(identity);
             const manual = self.reconnect.swap(false, .acq_rel);
             const dead = if (stream) |s| !s.alive.load(.acquire) else false;
@@ -170,13 +175,16 @@ pub const Service = struct {
                 state.bench_count = 0;
                 state.queue_id = 0;
                 state.phase.set("未连接");
-                self.needs_admin.store(identity.status == .admin_required, .release);
                 if (!recovery.available(identity, win.now())) {
                     state.status.set(switch (identity.status) {
                         .starting => "正在读取 LCU 认证",
                         .ready => "正在重新验证 LCU 认证并恢复连接",
                         .not_running => "等待 League 客户端启动",
-                        .admin_required => if (win.isAdmin()) "管理员权限下仍无法读取客户端命令行，请重试" else "读取 token 需要管理员权限",
+                        .admin_required => "认证助手暂时无法读取客户端，正在重试",
+                        .authorizing => "等待授权认证助手",
+                        .permission_required => "认证助手未获授权，可点击「授权认证助手」重试",
+                        .helper_missing => "缺少 catengar-auth.exe，请将它放在主程序旁",
+                        .helper_failed => "认证助手已停止，可点击「授权认证助手」重试",
                         .failed => "认证读取暂时失败，正在自动重试",
                     });
                     if (!self.publish(state)) break;
@@ -191,7 +199,6 @@ pub const Service = struct {
                     continue;
                 };
                 recovery.connected(identity);
-                self.needs_admin.store(false, .release);
                 metadata_stage = 0;
                 icon_cursor = 0;
                 connection_nonce = win.now();
@@ -210,9 +217,14 @@ pub const Service = struct {
             defer arena.deinit();
             const temp = arena.allocator();
             if (stream == null and win.now() >= next_ws) {
-                stream = events.Stream.create(&client.?) catch null;
+                var ws_error: ?anyerror = null;
+                stream = events.Stream.create(&client.?) catch |err| blk: {
+                    ws_error = err;
+                    break :blk null;
+                };
                 if (stream) |s| {
-                    s.cache.sync(temp, &client.?, false) catch {
+                    s.cache.sync(temp, &client.?, false) catch |err| {
+                        ws_error = err;
                         s.destroy();
                         stream = null;
                     };
@@ -221,7 +233,10 @@ pub const Service = struct {
                 if (stream) |s| {
                     phase_version = s.cache.phaseVersion();
                     state.log("WebSocket 已连接，实时监听对局和可用英雄。");
-                } else state.log("WebSocket 暂不可用，降级 REST 并每 10 秒尝试恢复。");
+                } else {
+                    var message: [192]u8 = undefined;
+                    state.log(std.fmt.bufPrint(&message, "WebSocket 暂不可用（{s}），10 秒后重试。", .{@errorName(ws_error orelse error.WebSocketDisconnected)}) catch "WebSocket 暂不可用，正在重试。");
+                }
             }
             state.websocket = stream != null;
             const tick_result = if (stream) |s| blk: {

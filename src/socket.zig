@@ -29,6 +29,11 @@ pub const Socket = struct {
         self.* = .{ .completed = completed, .closed = closed, .cancelled = cancelled };
         self.session = c.WinHttpOpen(std.unicode.utf8ToUtf16LeStringLiteral("catengar/0.1"), c.WINHTTP_ACCESS_TYPE_NO_PROXY, null, null, c.WINHTTP_FLAG_ASYNC) orelse return error.HttpOpen;
         errdefer _ = c.WinHttpCloseHandle(self.session);
+        // WinHTTP otherwise shares pooled TCP connections across sessions.
+        // LCU may route a connection as REST at its first request and reject
+        // a later WebSocket upgrade on that socket. Each WS gets its own pool.
+        var private_pool: c.BOOL = 1;
+        const isolated = c.WinHttpSetOption(self.session, c.WINHTTP_OPTION_DISABLE_GLOBAL_POOLING, &private_pool, @sizeOf(c.BOOL)) != 0;
         _ = c.WinHttpSetTimeouts(self.session, 1500, 1500, 1500, 1500);
         self.connection = c.WinHttpConnect(self.session, std.unicode.utf8ToUtf16LeStringLiteral("127.0.0.1"), port, 0) orelse return error.HttpConnect;
         errdefer _ = c.WinHttpCloseHandle(self.connection);
@@ -37,6 +42,11 @@ pub const Socket = struct {
         defer if (registered) self.close(request) else {
             _ = c.WinHttpCloseHandle(request);
         };
+        // Older WinHTTP versions lack the session pooling option.
+        if (!isolated) {
+            var disable: u32 = c.WINHTTP_DISABLE_KEEP_ALIVE;
+            if (c.WinHttpSetOption(request, c.WINHTTP_OPTION_DISABLE_FEATURE, &disable, @sizeOf(u32)) == 0) return error.SocketPooling;
+        }
         var context: usize = @intFromPtr(self);
         if (c.WinHttpSetOption(request, c.WINHTTP_OPTION_CONTEXT_VALUE, &context, @sizeOf(usize)) == 0) return error.SocketContext;
         const previous = c.WinHttpSetStatusCallback(request, callback, c.WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | c.WINHTTP_CALLBACK_FLAG_HANDLES, 0);

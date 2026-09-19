@@ -23,7 +23,7 @@ pub fn Text(comptime capacity: usize) type {
 pub const max_champions = 256;
 pub const max_priority = 32;
 pub const Preferences = struct {
-    theme: @import("theme.zig").Preset = .chatgpt_dark,
+    theme: @import("theme.zig").Preset = @import("theme.zig").default_preset,
     auto_accept: bool = false,
     auto_pick: bool = false,
     priority: [max_priority]i32 = @splat(0),
@@ -67,6 +67,7 @@ pub const Champion = struct {
 pub const Snapshot = struct {
     catalog_generation: u64 = 0,
     connected: bool = false,
+    auth_retry_available: bool = false,
     websocket: bool = false,
     status: Text(192) = Text(192).init("正在寻找 League 客户端…"),
     phase: Text(64) = Text(64).init("未连接"),

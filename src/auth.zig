@@ -1,61 +1,25 @@
 const std = @import("std");
-const types = @import("types.zig");
-pub const Credentials = struct { port: u16, token: types.Text(256), pid: u32 };
-
-// stdout is a private pipe to this process. Never print it, store it, or pass the
-// token in a subsequent command line. The powershell child has no visible window.
-const discovery_script =
-    \\$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
-    \\try { $ps=@(Get-CimInstance Win32_Process -Filter "Name='LeagueClientUx.exe'" -OperationTimeoutSec 3) } catch { exit 13 }
-    \\if ($ps.Count -eq 0) { exit 2 }
-    \\foreach ($p in ($ps | Sort-Object CreationDate -Descending)) {
-    \\  if (!$p.CommandLine) { continue }
-    \\  $port=[regex]::Match($p.CommandLine,'--app-port[= ]+"?(\d+)')
-    \\  $token=[regex]::Match($p.CommandLine,'--remoting-auth-token[= ]+"?([^\s"]+)')
-    \\  if ($port.Success -and $token.Success) {
-    \\    @{port=[int]$port.Groups[1].Value;token=$token.Groups[1].Value;pid=$p.ProcessId} | ConvertTo-Json -Compress
-    \\    exit 0
-    \\  }
-    \\}
-    \\exit 13
-;
-
-pub fn discover(allocator: std.mem.Allocator, io: std.Io) !Credentials {
-    const output = try std.process.run(allocator, io, .{
-        .argv = &.{ "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", discovery_script },
-        .stdout_limit = .limited(4096),
-        .stderr_limit = .limited(4096),
-        .create_no_window = true,
-        .timeout = .{ .duration = .{ .raw = .fromSeconds(8), .clock = .awake } },
-    });
-    defer {
-        @memset(output.stdout, 0);
-        allocator.free(output.stdout);
-        allocator.free(output.stderr);
-    }
-    switch (output.term) {
-        .exited => |code| switch (code) {
-            0 => {},
-            2 => return error.ClientNotRunning,
-            13 => return error.AdminRequired,
-            else => return error.DiscoveryFailed,
-        },
-        else => return error.DiscoveryFailed,
-    }
-    return parse(allocator, output.stdout);
-}
-pub fn parse(allocator: std.mem.Allocator, bytes: []const u8) !Credentials {
-    const Wire = struct { port: u16, token: []const u8, pid: u32 };
-    const parsed = try std.json.parseFromSlice(Wire, allocator, bytes, .{});
-    defer parsed.deinit();
-    const v = parsed.value;
-    if (v.port == 0 or v.token.len == 0 or v.token.len > 256 or v.pid == 0) return error.InvalidCredentials;
-    if (std.mem.indexOfAny(u8, v.token, "\r\n\x00") != null) return error.InvalidCredentials;
-    return .{ .port = v.port, .token = types.Text(256).init(v.token), .pid = v.pid };
-}
-
+const discovery = @import("auth_discovery.zig");
+pub const Credentials = discovery.Credentials;
+pub const discover = discovery.discover;
+pub const parse = discovery.parse;
+const broker = @import("auth_broker.zig");
 const win = @import("windows.zig");
 const c = win.c;
+
+/// Reconnects and repeated discovery failures never re-open a denied UAC prompt.
+/// Only the explicit retry button grants another launch attempt this session.
+pub const PromptGate = struct {
+    attempted: bool = false,
+    pub fn begin(self: *PromptGate) bool {
+        if (self.attempted) return false;
+        self.attempted = true;
+        return true;
+    }
+    pub fn retry(self: *PromptGate) void {
+        self.attempted = false;
+    }
+};
 /// A failed connection cannot reuse an old discovery result. Even if the token
 /// stays the same, one new discovery must finish before the next attempt.
 pub const Recovery = struct {
@@ -76,7 +40,7 @@ pub const Recovery = struct {
     }
 };
 pub const Identity = struct {
-    pub const Status = enum { starting, ready, not_running, admin_required, failed };
+    pub const Status = enum { starting, ready, not_running, admin_required, failed, authorizing, permission_required, helper_missing, helper_failed };
     status: Status = .starting,
     credentials: Credentials = .{ .port = 0, .pid = 0, .token = .{} },
     revision: u64 = 0,
@@ -101,7 +65,9 @@ pub const Watcher = struct {
     mutex: win.Mutex = .{},
     identity: Identity = .{},
     stopping: std.atomic.Value(bool) = .init(false),
+    retry_helper: std.atomic.Value(bool) = .init(false),
     poke: c.HANDLE,
+    shutdown: c.HANDLE,
     thread: ?std.Thread = null,
 
     pub fn create() !*Watcher {
@@ -109,20 +75,28 @@ pub const Watcher = struct {
         errdefer std.heap.page_allocator.destroy(self);
         const poke = c.CreateEventW(null, 0, 0, null) orelse return error.AuthWatchEvent;
         errdefer _ = c.CloseHandle(poke);
-        self.* = .{ .poke = poke };
+        const shutdown = c.CreateEventW(null, 1, 0, null) orelse return error.AuthWatchEvent;
+        errdefer _ = c.CloseHandle(shutdown);
+        self.* = .{ .poke = poke, .shutdown = shutdown };
         self.thread = try std.Thread.spawn(.{}, run, .{self});
         return self;
     }
     pub fn destroy(self: *Watcher) void {
         self.stopping.store(true, .release);
+        _ = c.SetEvent(self.shutdown);
         self.refresh();
         if (self.thread) |thread| thread.join();
         _ = c.CloseHandle(self.poke);
+        _ = c.CloseHandle(self.shutdown);
         @memset(std.mem.asBytes(&self.identity), 0);
         std.heap.page_allocator.destroy(self);
     }
     pub fn refresh(self: *Watcher) void {
         _ = c.SetEvent(self.poke);
+    }
+    pub fn requestHelper(self: *Watcher) void {
+        self.retry_helper.store(true, .release);
+        self.refresh();
     }
     pub fn read(self: *Watcher) Identity {
         self.mutex.lock();
@@ -137,11 +111,52 @@ pub const Watcher = struct {
     fn run(self: *Watcher) void {
         var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{ .environ = .{ .block = .global } });
         defer threaded.deinit();
+        var helper: ?broker.Client = null;
+        defer if (helper) |*client| client.deinit();
+        var prompt: PromptGate = .{};
+        var helper_error: Identity.Status = .permission_required;
         while (!self.stopping.load(.acquire)) {
+            if (self.retry_helper.swap(false, .acq_rel)) prompt.retry();
+            if (helper) |*client| {
+                var result = client.read(self.poke) catch |err| {
+                    if (err == error.Interrupted) continue;
+                    client.deinit();
+                    helper = null;
+                    helper_error = .helper_failed;
+                    self.update(helper_error, null);
+                    _ = c.WaitForSingleObject(self.poke, 3000);
+                    continue;
+                };
+                defer @memset(std.mem.asBytes(&result), 0);
+                self.update(switch (result.status) {
+                    .ready => .ready,
+                    .not_running => .not_running,
+                    .admin_required => .admin_required,
+                    .failed => .failed,
+                }, if (result.status == .ready) result.credentials else null);
+                continue;
+            }
             var credentials = discover(std.heap.page_allocator, threaded.io()) catch |err| {
+                if (err == error.AdminRequired) {
+                    if (!self.stopping.load(.acquire) and prompt.begin()) {
+                        self.update(.authorizing, null);
+                        helper = broker.Client.start(self.shutdown) catch |launch_error| {
+                            helper_error = switch (launch_error) {
+                                error.HelperMissing => .helper_missing,
+                                error.HelperCancelled, error.Interrupted => .permission_required,
+                                else => .helper_failed,
+                            };
+                            self.update(helper_error, null);
+                            continue;
+                        };
+                        continue;
+                    }
+                    self.update(helper_error, null);
+                    _ = c.WaitForSingleObject(self.poke, 3000);
+                    continue;
+                }
                 self.update(switch (err) {
                     error.ClientNotRunning => .not_running,
-                    error.AdminRequired => .admin_required,
                     else => .failed,
                 }, null);
                 _ = c.WaitForSingleObject(self.poke, 3000);

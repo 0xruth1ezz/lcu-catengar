@@ -8,7 +8,7 @@ pub fn main(init: std.process.Init) !void {
     defer threaded.deinit();
     var creds = auth.discover(a, threaded.io()) catch |err| {
         std.debug.print("LCU discovery: {s}\n", .{@errorName(err)});
-        if (err == error.AdminRequired) std.debug.print("Launch catengar.exe: it will automatically request Windows administrator permission.\n", .{});
+        if (err == error.AdminRequired) std.debug.print("Launch catengar.exe: only its credential helper will request administrator permission.\n", .{});
         return err;
     };
     defer @memset(std.mem.asBytes(&creds), 0);

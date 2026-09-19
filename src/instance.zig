@@ -11,7 +11,7 @@ pub const Instance = struct {
     pending: std.atomic.Value(bool) = .init(false),
     thread: ?std.Thread = null,
 
-    pub fn acquire(a: std.mem.Allocator, io: std.Io, root: []const u8, handoff: bool) !?Instance {
+    pub fn acquire(a: std.mem.Allocator, io: std.Io, root: []const u8) !?Instance {
         try std.Io.Dir.cwd().createDirPath(io, root);
         const path = try std.fs.path.join(a, &.{ root, "catengar.lock" });
         defer a.free(path);
@@ -28,19 +28,14 @@ pub const Instance = struct {
         var attrs: c.SECURITY_ATTRIBUTES = .{ .nLength = @sizeOf(c.SECURITY_ATTRIBUTES), .lpSecurityDescriptor = descriptor, .bInheritHandle = 0 };
         const event = c.CreateEventW(&attrs, 0, 0, event_name.ptr) orelse return error.InstanceEvent;
         errdefer _ = c.CloseHandle(event);
-        const deadline = win.now() + (if (handoff) @as(u64, 20000) else 0);
-        while (true) {
-            const handle = c.CreateFileW(wide.ptr, c.GENERIC_READ | c.GENERIC_WRITE, 0, null, c.OPEN_ALWAYS, c.FILE_ATTRIBUTE_NORMAL, null);
-            if (handle != c.INVALID_HANDLE_VALUE) return .{ .lock = handle, .activation = event };
-            if (c.GetLastError() != c.ERROR_SHARING_VIOLATION) return error.InstanceLock;
-            if (win.now() >= deadline) {
-                _ = c.SetEvent(event);
-                _ = c.CloseHandle(event);
-                return null;
-            }
-            win.sleep(50);
-        }
+        const handle = c.CreateFileW(wide.ptr, c.GENERIC_READ | c.GENERIC_WRITE, 0, null, c.OPEN_ALWAYS, c.FILE_ATTRIBUTE_NORMAL, null);
+        if (handle != c.INVALID_HANDLE_VALUE) return .{ .lock = handle, .activation = event };
+        if (c.GetLastError() != c.ERROR_SHARING_VIOLATION) return error.InstanceLock;
+        _ = c.SetEvent(event);
+        _ = c.CloseHandle(event);
+        return null;
     }
+
     pub fn watch(self: *Instance, notify: *const fn () bool) !void {
         self.thread = try std.Thread.spawn(.{}, listen, .{ self, notify });
     }

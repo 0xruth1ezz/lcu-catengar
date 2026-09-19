@@ -8,7 +8,7 @@ pub const Preset = enum(u8) {
     classic_gold,
 
     pub fn fromName(name: []const u8) Preset {
-        return std.meta.stringToEnum(Preset, name) orelse .chatgpt_dark;
+        return std.meta.stringToEnum(Preset, name) orelse default_preset;
     }
     pub fn label(self: Preset) []const u8 {
         return switch (self) {
@@ -20,7 +20,8 @@ pub const Preset = enum(u8) {
         };
     }
 };
-pub const presets = std.enums.values(Preset);
+pub const default_preset: Preset = .classic_gold;
+pub const presets = [_]Preset{ .classic_gold, .chatgpt_dark, .chatgpt_light, .nord, .catppuccin };
 
 /// RGB values are kept independent of the renderer and configuration format.
 /// ChatGPT palettes are an adaptation, not an official client theme export.

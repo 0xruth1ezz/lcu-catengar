@@ -3,7 +3,7 @@
     <row gap="9" cross="center">
       <icon name="check-circle" width="20" height="20" foreground="success"/>
       <text grow="1">{toastTitle}</text>
-      <text size="sm" foreground="text_muted">catengar</text>
+      <text size="sm" foreground="text_muted">Catengar</text>
       <button variant="ghost" size="icon" icon="x" label="关闭提示" on-press="dismiss_toast"/>
     </row>
     <text foreground="text_muted" wrap="true">{toastBody}</text>

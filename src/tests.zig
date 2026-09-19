@@ -1,4 +1,59 @@
 const std = @import("std");
+
+test "UAC cancellation stays quiet until the user explicitly retries" {
+    var prompt: @import("auth.zig").PromptGate = .{};
+    try std.testing.expect(prompt.begin());
+    for (0..100) |_| try std.testing.expect(!prompt.begin());
+    prompt.retry();
+    try std.testing.expect(prompt.begin());
+    try std.testing.expect(!prompt.begin());
+}
+
+test "credential packets round trip and offline messages carry no token" {
+    const wire = @import("auth_protocol.zig");
+    const credentials: @import("auth.zig").Credentials = .{ .port = 54321, .pid = 42, .token = @import("types.zig").Text(256).init("offline-fixture-token") };
+    const ready = wire.encode(.{ .status = .ready, .credentials = credentials });
+    try std.testing.expectEqualDeep(credentials, (try wire.decode(&ready)).credentials);
+    for ([_]wire.Status{ .not_running, .admin_required, .failed }) |status| {
+        const bytes = wire.encode(.{ .status = status, .credentials = credentials });
+        const result = try wire.decode(&bytes);
+        try std.testing.expectEqual(status, result.status);
+        try std.testing.expectEqual(@as(usize, 0), result.credentials.token.len);
+        for (bytes[6..]) |byte| try std.testing.expectEqual(@as(u8, 0), byte);
+    }
+}
+
+test "credential IPC rejects malformed and oversized messages" {
+    const wire = @import("auth_protocol.zig");
+    const good = wire.encode(.{ .status = .ready, .credentials = .{ .port = 54321, .pid = 42, .token = @import("types.zig").Text(256).init("test") } });
+    try std.testing.expectError(error.InvalidAuthPacket, wire.decode(good[0..20]));
+    const long = good ++ [_]u8{0};
+    try std.testing.expectError(error.InvalidAuthPacket, wire.decode(&long));
+    for ([_]usize{ 0, 4, 5, 12, 13, 271 }) |index| {
+        var bytes = good;
+        bytes[index] = 255;
+        try std.testing.expectError(error.InvalidAuthPacket, wire.decode(&bytes));
+    }
+    for ([_]u8{ '\r', '\n', 0 }) |char| {
+        var bytes = good;
+        bytes[14] = char;
+        try std.testing.expectError(error.InvalidAuthPacket, wire.decode(&bytes));
+    }
+    var offline = wire.encode(.{ .status = .not_running });
+    offline[14] = 'x';
+    try std.testing.expectError(error.InvalidAuthPacket, wire.decode(&offline));
+}
+
+test "helper accepts only a nonce and parent PID, never arbitrary commands" {
+    const broker = @import("auth_broker.zig");
+    const nonce = "0123456789abcdef0123456789abcdef";
+    const args = [_][]const u8{ "helper", "--pipe", nonce, "--parent", "42" };
+    try std.testing.expectEqual(@as(u32, 42), (try broker.arguments(&args)).parent);
+    try std.testing.expectError(error.InvalidHelperArguments, broker.arguments(args[0..4]));
+    try std.testing.expectError(error.InvalidHelperArguments, broker.arguments(&(args ++ [_][]const u8{"--command"})));
+    try std.testing.expectError(error.InvalidHelperArguments, broker.arguments(&.{ "helper", "--pipe", "C:\\any.exe", "--parent", "42" }));
+    try std.testing.expectError(error.InvalidHelperArguments, broker.arguments(&.{ "helper", "--pipe", nonce, "--parent", "0" }));
+}
 const t = @import("types.zig");
 const l = @import("logic.zig");
 const auth = @import("auth.zig");
@@ -120,7 +175,7 @@ test "theme settings preserve automation and migrate missing or unknown names" {
         "{\"theme\":\"future-theme\",\"auto_accept\":true,\"priority\":[107,99]}",
     }) |json| {
         const loaded = try settings.decode(a, json);
-        try testing.expectEqual(themes.Preset.chatgpt_dark, loaded.theme);
+        try testing.expectEqual(themes.Preset.classic_gold, loaded.theme);
         try testing.expect(loaded.auto_accept);
         try testing.expectEqualSlices(i32, &.{ 107, 99 }, loaded.ids());
     }
@@ -255,35 +310,17 @@ test "single instance rejects duplicate launch, signals activation, and releases
     const root = try std.fs.path.join(a, &.{ ".zig-cache", "tmp", &dir.sub_path });
     defer a.free(root);
     const Instance = @import("instance.zig").Instance;
-    var first = (try Instance.acquire(a, testing.io, root, false)).?;
+    var first = (try Instance.acquire(a, testing.io, root)).?;
     var released = false;
     defer if (!released) first.deinit();
-    try testing.expect((try Instance.acquire(a, testing.io, root, false)) == null);
+    try testing.expect((try Instance.acquire(a, testing.io, root)) == null);
     try testing.expectEqual(@as(u32, win.c.WAIT_OBJECT_0), win.c.WaitForSingleObject(first.activation, 100));
     first.deinit();
     released = true;
-    var second = (try Instance.acquire(a, testing.io, root, false)).?;
+    var second = (try Instance.acquire(a, testing.io, root)).?;
     defer second.deinit();
 }
 
-test "administrator restart waits for the old instance to release ownership" {
-    var dir = testing.tmpDir(.{});
-    defer dir.cleanup();
-    const root = try std.fs.path.join(a, &.{ ".zig-cache", "tmp", &dir.sub_path });
-    defer a.free(root);
-    const Instance = @import("instance.zig").Instance;
-    var first = (try Instance.acquire(a, testing.io, root, false)).?;
-    const Releaser = struct {
-        fn run(owner: *Instance) void {
-            win.sleep(100);
-            owner.deinit();
-        }
-    };
-    const thread = try std.Thread.spawn(.{}, Releaser.run, .{&first});
-    defer thread.join();
-    var replacement = (try Instance.acquire(a, testing.io, root, true)).?;
-    defer replacement.deinit();
-}
 fn preferences() t.Preferences {
     var p: t.Preferences = .{ .auto_pick = true };
     p.add(107);

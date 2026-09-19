@@ -13,16 +13,32 @@ pub const c = @cImport({
     @cInclude("dwmapi.h");
     @cInclude("imm.h");
     @cInclude("commctrl.h");
+    @cInclude("bcrypt.h");
 });
 pub fn mainWindow() c.HWND {
     var hwnd: c.HWND = null;
     _ = c.EnumThreadWindows(c.GetCurrentThreadId(), findMainWindow, @bitCast(@intFromPtr(&hwnd)));
     return hwnd;
 }
+// Published on the UI thread before starting credential discovery. The launch
+// thread must not enumerate its own (windowless) thread or another app's HWND.
+var authorization_owner: std.atomic.Value(c.HWND) = .init(null);
+pub fn setAuthorizationOwner(hwnd: c.HWND) void {
+    authorization_owner.store(hwnd, .release);
+}
+pub fn authorizationOwner() c.HWND {
+    // HWND is an opaque kernel value, not an aligned HWND__ allocation. Keep
+    // its pointer type across the atomic handoff (integer-to-pointer alignment
+    // assertions incorrectly reject valid handles whose low bits are set).
+    const hwnd = authorization_owner.load(.acquire) orelse return null;
+    var pid: c.DWORD = 0;
+    _ = c.GetWindowThreadProcessId(hwnd, &pid);
+    return if (pid == c.GetCurrentProcessId()) hwnd else null;
+}
 fn findMainWindow(hwnd: c.HWND, context: c.LPARAM) callconv(.winapi) c.BOOL {
     var title: [64]u16 = undefined;
     const len = c.GetWindowTextW(hwnd, &title, title.len);
-    if (len != 8 or !std.mem.eql(u16, title[0..8], std.unicode.utf8ToUtf16LeStringLiteral("catengar"))) return 1;
+    if (len != 8 or !std.mem.eql(u16, title[0..8], std.unicode.utf8ToUtf16LeStringLiteral("Catengar"))) return 1;
     const result: *c.HWND = @ptrFromInt(@as(usize, @bitCast(context)));
     result.* = hwnd;
     return 0;
@@ -72,7 +88,7 @@ pub fn prepareToastWindow() void {
     // The pinned Native Windows host ignores authored popup x/y at create.
     // Its HWND exists before the first canvas paint, so finish placement
     // here without showing or activating an empty window.
-    const hwnd = c.FindWindowW(std.unicode.utf8ToUtf16LeStringLiteral("NativeSdkWindowsHost"), std.unicode.utf8ToUtf16LeStringLiteral("catengar · 操作成功")) orelse return;
+    const hwnd = c.FindWindowW(std.unicode.utf8ToUtf16LeStringLiteral("NativeSdkWindowsHost"), std.unicode.utf8ToUtf16LeStringLiteral("Catengar · 操作成功")) orelse return;
     var process_id: c.DWORD = 0;
     _ = c.GetWindowThreadProcessId(hwnd, &process_id);
     if (process_id != c.GetCurrentProcessId()) return;
@@ -89,15 +105,6 @@ pub fn prepareToastWindow() void {
 }
 pub fn isAdmin() bool {
     return c.IsUserAnAdmin() != 0;
-}
-pub fn elevate() bool {
-    var executable: [32768]u16 = undefined;
-    const len = c.GetModuleFileNameW(null, &executable, executable.len);
-    if (len == 0 or len >= executable.len) return false;
-    var cwd: [32768]u16 = undefined;
-    const cwd_len = c.GetCurrentDirectoryW(cwd.len, &cwd);
-    const result = c.ShellExecuteW(null, std.unicode.utf8ToUtf16LeStringLiteral("runas"), &executable, std.unicode.utf8ToUtf16LeStringLiteral("--elevated-restart"), if (cwd_len > 0 and cwd_len < cwd.len) &cwd else null, c.SW_SHOWNORMAL);
-    return @intFromPtr(result) > 32;
 }
 pub fn dataDirectory(allocator: std.mem.Allocator) ![]const u8 {
     var buffer: [32768]u16 = undefined;

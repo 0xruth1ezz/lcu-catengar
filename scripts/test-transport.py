@@ -35,6 +35,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def handle(self):
+        self.request_count = 0
         try:
             super().handle()
         except (ConnectionResetError, BrokenPipeError):
@@ -57,11 +58,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.reply(500, None)
 
     def do_GET(self):
+        self.request_count += 1
         expected = "Basic " + base64.b64encode(("riot:" + self.server.token).encode()).decode()
         if self.headers.get("Authorization") != expected:
             self.reply(401, None)
             return
         if self.path == "/" and self.headers.get("Upgrade", "").lower() == "websocket":
+            # Model a server that routes a connection at its first request.
+            # A WebSocket must not borrow a pooled ordinary REST connection.
+            if self.request_count != 1:
+                self.reply(400, None)
+                return
             digest = hashlib.sha1((self.headers["Sec-WebSocket-Key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
             self.send_response(101)
             self.send_header("Upgrade", "websocket")

@@ -5,9 +5,9 @@ pub const gap: f32 = 10;
 pub const stride: f32 = tile_height + gap;
 
 pub fn columns(canvas_width: f32) usize {
-    // Window padding (48), shared panel padding (36), two divider gaps (48),
-    // and the 1 px divider are shared by the two equal columns.
-    const library_width = @max(1, (canvas_width - 133) / 2);
+    // Window padding (48), shared panel padding (36), two arrow gaps (48),
+    // and the 24 px arrow are shared by the two equal columns.
+    const library_width = @max(1, (canvas_width - 156) / 2);
     return @intFromFloat(std.math.clamp(@floor((library_width + gap) / (tile_height + gap)), 2, 10));
 }
 

@@ -1,15 +1,18 @@
 <column grow="1" background="background" padding="24" gap="18">
   <row cross="center" gap="12">
     <column grow="1" gap="4">
-      <row gap="12" cross="center"><text size="heading">catengar</text><badge>极地助手</badge></row>
-      <text foreground="text_muted">把选择交给偏好，把注意力留给对局。</text>
+      <row gap="12" cross="center"><text size="heading">Catengar</text><badge>极地助手</badge></row>
     </column>
     <badge>{phaseLabel}</badge>
     <button variant="outline" icon="refresh-cw" on-press="reconnect">重新连接</button>
-    <if test="{elevation_cancelled}"><button variant="primary" on-press="elevate">管理员重试</button></if>
+    <if test="{snapshot.auth_retry_available}"><button variant="primary" on-press="authorize_helper">授权认证助手</button></if>
   </row>
   <row cross="center" gap="12">
-    <spacer grow="1"/>
+    <row grow="1" gap="10" cross="center" label="连接状态">
+      <if test="{snapshot.connected}"><icon name="check-circle" foreground="success" width="18" height="18"/></if>
+      <else><icon name="circle-dot" foreground="warning" width="18" height="18"/></else>
+      <text grow="1" wrap="true">{status}</text>
+    </row>
     <text size="sm" foreground="text_muted">外观</text>
     <stack width="200">
       <select on-press="toggle_theme_picker" label="外观主题">{themeLabel}</select>
@@ -21,11 +24,6 @@
         </dropdown-menu>
       </if>
     </stack>
-  </row>
-  <row background="surface" radius="md" padding="12" gap="10" cross="center">
-    <if test="{snapshot.connected}"><icon name="check-circle" foreground="success" width="18" height="18"/></if>
-    <else><icon name="circle-dot" foreground="warning" width="18" height="18"/></else>
-    <text grow="1">{status}</text><text foreground="text_muted">LCU · 本机连接</text>
   </row>
   <row gap="16">
     <column grow="1" background="surface" radius="lg" padding="18" gap="10">
@@ -66,7 +64,7 @@
       </scroll>
       <text foreground="text_muted" size="sm">{libraryLabel}</text>
     </column>
-    <column width="1" background="border"/>
+    <column width="24" main="center" cross="center"><icon name="arrow-right" width="24" height="24" foreground="text_muted"/></column>
     <column grow="1" gap="12">
       <row cross="center"><text size="lg" grow="1">我的优先顺序</text><badge>{preferences.count} / 32</badge></row>
       <scroll grow="1">

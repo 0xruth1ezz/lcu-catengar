@@ -1,4 +1,4 @@
-# catengar
+# Catengar
 
 Windows 上的 League Client 小工具。界面使用 [vercel-labs/native](https://github.com/vercel-labs/native)，业务和通信使用 **Zig 0.16.0**，没有 WebView、Node 或浏览器运行时。
 
@@ -15,23 +15,25 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -BuildOnly
 powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Test
 ```
 
-构建后直接打开 `zig-out/bin/catengar.exe`，不需要安装 Zig。首次构建需要网络下载 Zig 与 Native SDK，之后可以离线构建。SDK 固定在 `6b053188dc8ac415f602618be12717889cb0a986`，下载归档校验 SHA-256；不需要 npm。
+构建后直接打开 `zig-out/bin/catengar.exe`，不需要安装 Zig。分发时必须将 `catengar.exe` 与 `catengar-auth.exe` 放在同一目录；`catengar-diagnose.exe` 是可选的命令行诊断工具。首次构建需要网络下载 Zig 与 Native SDK，之后可以离线构建。SDK 固定在 `6b053188dc8ac415f602618be12717889cb0a986`，下载归档校验 SHA-256；不需要 npm。
 
 1. 打开 League 客户端和工具。工具通过隐藏的 PowerShell 子进程读取 `LeagueClientUx.exe` 的命令行，获取 `--app-port` 和 `--remoting-auth-token`。
-2. 启动时先检查读取认证所需的权限，再创建主窗口。如果读取命令行需要更高权限，**工具自动弹出 Windows UAC**，授权后只显示管理员实例的窗口，避免普通窗口先出现、关闭后再出现。取消授权后显示普通窗口，不会反复提示，可点击「管理员重试」。客户端未启动时仍正常打开；已经具有管理员权限或已有实例时不重复提权。
+2. 主程序以普通权限直接显示窗口，不因认证而重启。后台先尝试普通权限读取，只有需要提权时才通过 UAC 启动独立的 **`catengar-auth.exe` 认证助手**。助手仅持续读取 League 客户端命令行，主界面、配置保存、REST/WebSocket 和自动化仍由普通权限主程序负责。取消授权不会反复弹窗，可点击「授权认证助手」重试；客户端未启动时不会请求管理员权限。
 3. 英雄库与优先顺序位于同一块面板。英雄库采用连续滚动的头像网格，没有分页或头像下方的名称。按客户端语言的名称或英文名搜索，点击整张卡片加入优先选择，右上角勾选表示已选择，再次点击取消；使用右侧上下箭头设置优先级。最多 32 位，达到上限后仍可点击已选卡片取消，排在前面的优先。
 4. 分别打开「自动接受对局」「优先英雄自动选取」。首次运行两个开关都关闭，后续恢复保存的设置。
-5. 右上方「外观」下拉框可选择 ChatGPT 深色、ChatGPT 浅色、Nord 北欧、Catppuccin 和经典金色。立即生效，无需重启，选择自动保存到本地设置的 `theme` 字段，下次启动会恢复。
+5. 右上方「外观」下拉框依次提供经典金色、ChatGPT 深色、ChatGPT 浅色、Nord 北欧和 Catppuccin，默认使用经典金色。立即生效，无需重启，选择自动保存到本地设置的 `theme` 字段，下次启动会恢复。
 
-设置保存到 `%LOCALAPPDATA%\LoLRengar\settings.json`，图片和静态资料缓存在该目录的 `cache` 子目录。重命名为 catengar 后继续使用此目录，以保留已有设置。客户端重启、端口或 token 变化后会自动重新连接。
+设置保存到 `%LOCALAPPDATA%\LoLRengar\settings.json`，图片和静态资料缓存在该目录的 `cache` 子目录。重命名为 Catengar 后继续使用此目录，以保留已有设置。客户端重启、端口或 token 变化后会自动重新连接。
 
-后台认证线程监听客户端进程退出，连接期间每 5 秒重新读取一次命令行并比较 PID、端口和 token（另计读取耗时）；客户端未启动或读取失败时每 3 秒重试。WebSocket 断线、HTTP 401/403 或连接检查失败会立即请求重新读取认证，至少退避 1 秒且等到新的认证查询完成后重试。恢复连接时重新订阅事件、同步当前状态，清除旧选人决策，保留本地开关和英雄优先级。主窗口隐藏到托盘后同样生效。
+普通窗口的位置和尺寸保存在同目录的 `window.json`，拖动或缩放结束后写入，下次启动在首次显示前恢复。连接、断线重连和认证完成不隐藏、重建或移动主窗口，也不唤回已隐藏或最小化的窗口。系统 UAC 提示仍可能临时切换到安全桌面；这是 Windows 的授权界面，不是主程序重新启动。移除显示器后，下次启动会将窗口放回可见工作区。
 
-**点击窗口关闭按钮或 Alt+F4 会隐藏到系统托盘，自动化继续运行。** 点击托盘图标或右键菜单「打开 catengar」恢复窗口；右键菜单「完全退出」保存设置并停止后台服务。每个 Windows 用户只运行一个实例，重复启动会唤回已有窗口。管理员重启会等待旧实例释放锁后才启动服务；崩溃后操作系统自动释放锁，无需删除锁文件。
+后台认证线程监听客户端进程退出，连接期间每 5 秒重新读取一次命令行并比较 PID、端口和 token（另计读取耗时）；客户端未启动或读取失败时每 3 秒重试。WebSocket 断线、HTTP 401/403 或连接检查失败后，至少退避 1 秒且等到新的认证查询完成后重试；普通读取可立即唤醒，管理员助手沿用每 5 秒的监视周期。恢复连接时重新订阅事件、同步当前状态，清除旧选人决策，保留本地开关和英雄优先级。主窗口隐藏到托盘后同样生效。
+
+**点击窗口关闭按钮或 Alt+F4 会隐藏到系统托盘，自动化继续运行。** 点击托盘图标或右键菜单「打开 Catengar」恢复窗口；右键菜单「完全退出」保存设置并停止后台服务。每个 Windows 用户只运行一个实例，重复启动会唤回已有窗口。认证助手随主程序退出，助手存活期间的客户端重启和 token 刷新不重复请求 UAC；完全退出后再次启动助手仍可能需要授权。崩溃后操作系统自动释放锁，无需删除锁文件。
 
 自动接受或抢英雄成功后，会在桌面右下角显示应用绘制的提示窗，沿用当前主题，约 4.5 秒后消失，也可点击关闭。它不使用系统通知，不会在弹出时抢焦点；主窗口隐藏到托盘后仍会显示。连续成功的提示依次展示，普通状态刷新不会重复弹出；抢英雄必须等客户端确认后才提示。
 
-应用文件、窗口、任务栏和托盘使用 `assets/catengar-icon.png` 中的猫科图标，透明边缘保持不变。`assets/catengar.ico` 包含 16–256 px 的 9 种尺寸并内嵌在 exe 中；托盘所需的文件自动释放到本地数据目录，单独复制 exe 即可使用。从其他工作目录启动也能找到图标。更换源图后运行 `powershell -File scripts/build-icon.ps1` 重新生成 ICO，再构建应用；CI 直接使用已提交的 ICO，无需额外图片工具。
+应用文件、窗口、任务栏和托盘使用 `assets/catengar-icon.png` 中的猫科图标，透明边缘保持不变。`assets/catengar.ico` 包含 16–256 px 的 9 种尺寸并内嵌在 exe 中；托盘所需的文件自动释放到本地数据目录，图标无需单独分发。从其他工作目录启动也能找到图标。更换源图后运行 `powershell -File scripts/build-icon.ps1` 重新生成 ICO，再构建应用；CI 直接使用已提交的 ICO，无需额外图片工具。
 
 主窗口使用 macOS 风格的自绘标题栏：左侧红色按钮收进托盘，黄色按钮最小化，绿色按钮最大化或还原。空白标题栏可拖动、双击最大化/还原；保留系统边缘缩放和任务栏操作，Windows 11 使用系统圆角与阴影。标题栏随当前主题即时变化，三个按钮支持键盘焦点。托盘与任务栏继续使用猫科图标。
 
@@ -73,35 +75,44 @@ LCU 接口随客户端更新可能变化。当前客户端能否使用卡片选�
 
 ## 认证与诊断
 
-token 只在私有子进程管道及应用内存中使用，不进入日志、设置、图片 URL 或 HTTP 子进程参数。REST 和 WebSocket 均使用 WinHTTP，固定连接 `https://127.0.0.1:<port>` / `wss://127.0.0.1:<port>`，不使用代理、不跟随重定向；仅在这个本地连接上接受 LCU 的自签名证书。WebSocket 单条消息限制 2 MiB，只缓存五个已订阅资源；断线后丢弃旧缓存重新同步。初始 REST 快照不会覆盖更新的事件，阶段退出会清除上局选人数据，事件改变后旧决策不会继续提交。
+主程序 manifest 为 `asInvoker`，认证助手为 `requireAdministrator`。助手路径固定为主程序同目录文件，命令行仅包含随机管道标识和父进程 PID。管道拒绝远程客户端，使用显式 ACL，并在两端核对进程 PID；助手还校验父进程为同目录的 `catengar.exe`，以 identification-only QoS 禁止服务端模拟管理员身份。助手不接收脚本、文件路径或通用管理员命令；PowerShell 与模块解析限定为 Windows 系统路径。
 
-WebSocket 使用 WinHTTP 异步接收与可取消等待。重连或退出时先唤醒接收线程，再取消句柄并等待最后的关闭回调，之后释放缓冲区；即使服务端不回复关闭握手，也不会阻塞在同步接收中。认证读取在线程中独立运行，不阻塞正常抢英雄循环。
+助手不安装服务或计划任务，不保存管理员授权。主程序退出或管道关闭后助手会退出；正在执行的命令行查询有 8 秒超时。此次拆分为以后在用户可写目录更新主程序留下条件，尚未实现自动更新；安装在 Program Files 等受保护目录时，更新仍可能需要管理员权限。
+
+token 只在私有子进程管道、本机命名管道及应用内存中使用，不进入日志、设置、图片 URL 或 HTTP 子进程参数。REST 和 WebSocket 均使用 WinHTTP，固定连接 `https://127.0.0.1:<port>` / `wss://127.0.0.1:<port>`，不使用代理、不跟随重定向；仅在这个本地连接上接受 LCU 的自签名证书。WebSocket 单条消息限制 2 MiB，只缓存五个已订阅资源；断线后丢弃旧缓存重新同步。初始 REST 快照不会覆盖更新的事件，阶段退出会清除上局选人数据，事件改变后旧决策不会继续提交。
+
+WebSocket 使用独立的 WinHTTP 连接池，避免重连时借用已有 REST 连接导致升级失败；旧系统不支持独立连接池时禁用握手请求的 keep-alive。WebSocket 使用 WinHTTP 异步接收与可取消等待。重连或退出时先唤醒接收线程，再取消句柄并等待最后的关闭回调，之后释放缓冲区；即使服务端不回复关闭握手，也不会阻塞在同步接收中。认证读取在线程中独立运行，不阻塞正常抢英雄循环。
 
 ```powershell
 # 只读诊断；客户端已提权时，从管理员终端运行
 powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Diagnose
 ```
 
-诊断验证 WebSocket 升级、订阅和空闲连接，输出接口状态码、条目数及游戏阶段，不输出认证信息。正常界面会自动申请管理员权限；命令行诊断仅报告需要权限。
+诊断验证 WebSocket 升级、订阅和空闲连接，输出接口状态码、条目数及游戏阶段，不输出认证信息。界面仅为独立认证助手自动申请管理员权限；命令行诊断仅报告需要权限。
 
 ## 源码
 
 - `src/app.native`：原生界面。
 - `src/titlebar.zig`：自绘标题栏和红黄绿窗口按钮。
 - `src/ime.zig`：将画布输入焦点及光标位置同步给 Windows 输入法，定位候选栏并处理失焦清理；`zig build test-ime` 检查焦点与 DPI 坐标。
-- `src/main.zig`：UI 状态、消息、图片生命周期和 UAC 重启。
+- `src/main.zig`：普通权限 UI 状态、消息和图片生命周期。
 - `src/champion_grid.zig` / `src/portraits.zig`：网格可视范围、连续滚动和共享头像图集。
 - `src/portrait_worker.zig` / `src/catalog.zig`：有界后台头像解码队列、目录内容标识和重连缓存复用。
 - `src/toasts.zig` / `src/toast.native`：成功提示去重、排队、定时关闭与自绘提示窗。
-- `src/auth.zig` / `src/lcu.zig`：命令行认证、WinHTTP 通信。
+- `src/auth.zig`：认证监视、权限助手启动策略与重连身份管理。
+- `src/auth_helper.zig` / `src/auth_discovery.zig`：独立管理员助手与固定的只读命令行查询。
+- `src/auth_broker.zig` / `src/auth_protocol.zig`：受限本机命名管道、双向进程身份校验和有界认证消息。
+- `src/lcu.zig`：普通权限 WinHTTP 通信。
 - `src/logic.zig`：可独立测试的模式判断、优先级选择及退避规则。
 - `src/service.zig`：事件驱动自动化、动作确认、自动重连和资源缓存。
 - `src/events.zig`：WebSocket 接收、WAMP 订阅、事件缓存和快照同步。
 - `src/socket.zig`：可取消的 WinHTTP 异步 WebSocket、回调和句柄生命周期。
-- `src/instance.zig`：跨权限单实例锁、重复启动唤回和管理员重启交接。
+- `src/instance.zig`：单实例锁与重复启动唤回。
 - `src/settings.zig`：配置解析和原子写入。
+- `src/window_state.zig`：记录真实 Win32 窗口位置和尺寸，仅首次显示前恢复；`zig build test-window` 验证移动、隐藏、最小化与位置恢复。
 - `src/tests.zig`：离线协议与自动化测试。
-- `scripts/test-transport.py` / `src/transport_test.zig`：本地 TLS/WAMP 故障测试。运行 `python scripts/test-transport.py`，仅需 Python 标准库和已安装的 Zig；模拟空闲连接取消、远端断线、token 更新、端口/PID 更换和重订阅，不读取真实 LCU 认证。`scripts/fixtures/loopback.pem` 是公开的自签名测试证书及测试密钥，仅供这些离线测试使用。
+- `src/auth_broker_test.zig` / `src/auth_fixture.zig`：`zig build test-auth` 使用假凭据验证管道通信、身份拒绝、token 刷新、断开退出与读取取消；不请求 UAC、不读取真实认证，测试助手不打包。
+- `scripts/test-transport.py` / `src/transport_test.zig`：本地 TLS/WAMP 故障测试。运行 `python scripts/test-transport.py`，仅需 Python 标准库和已安装的 Zig；模拟拒绝在 REST 连接上升级 WebSocket、空闲连接取消、远端断线、token 更新、端口/PID 更换和重订阅，不读取真实 LCU 认证。`scripts/fixtures/loopback.pem` 是公开的自签名测试证书及测试密钥，仅供这些离线测试使用。
 
 UI 调试可使用 `zig build -Doptimize=ReleaseSafe -Dautomation=true`。Native SDK 会在 `.zig-cache/native-sdk-automation` 输出语义快照，并接受它的文件自动化协议。正常构建未启用该调试通道。
 
@@ -111,12 +122,12 @@ UI 调试可使用 `zig build -Doptimize=ReleaseSafe -Dautomation=true`。Native
 
 `scripts/bootstrap.ps1` 会应用 `scripts/patch-native.ps1` 中的性能补丁：Native 原本会在每帧、每个头像绘制时重新散列整张图集，现在在图像注册/更新时计算一次并沿用 `ReferenceImage.content_fingerprint`。图像内容改变仍会触发 GPU 上传；重复显示不再扫描像素。补丁针对固定 SDK，源码不匹配时明确报错，重复执行无副作用；运行 `zig build test-images` 验证不变内容复用、修改内容失效及图片槽移除后的正确性。
 
-主题的背景、卡片、文字、强调色和交互状态集中在 `src/theme.zig` 与 `src/main.zig` 的 token 映射中。默认采用 ChatGPT 深色风格；ChatGPT 两款是参考其中性灰和黑白层次的适配，并非官方主题导出。[Nord](https://www.nordtheme.com/docs/colors-and-palettes/) 和 [Catppuccin Mocha](https://catppuccin.com/palette/) 参考官方色板，并为本工具的状态和边界做了调整。旧设置缺少主题、或含未知主题名称时，回退为 ChatGPT 深色，其余偏好继续保留。正文、次要文字及选中按钮的文字配色均有 4.5:1 对比度检查。
+主题的背景、卡片、文字、强调色和交互状态集中在 `src/theme.zig` 与 `src/main.zig` 的 token 映射中。默认采用经典金色风格；ChatGPT 两款是参考其中性灰和黑白层次的适配，并非官方主题导出。[Nord](https://www.nordtheme.com/docs/colors-and-palettes/) 和 [Catppuccin Mocha](https://catppuccin.com/palette/) 参考官方色板，并为本工具的状态和边界做了调整。旧设置缺少主题、或含未知主题名称时，回退为经典金色，其余偏好继续保留。正文、次要文字及选中按钮的文字配色均有 4.5:1 对比度检查。
 
 界面字体从本机 Windows 字体目录读取微软雅黑，内存中提取字体集合的第一个字面供 Native SDK 使用；不复制或分发系统字体。游戏资源仍全部由 LCU 提供。
 
 ## GitHub CI
 
-`.github/workflows/build.yml` 在每次 push、pull request 和手动运行时执行 Windows 构建：格式检查 → 离线单元测试、图像缓存失效测试、输入法焦点与 DPI 测试及 TLS/WebSocket 故障测试 → ReleaseSafe 编译 → 上传便携程序（保留 14 天）。不需要 League 客户端或任何账号密钥。故障测试使用运行器预装的 Python 标准库，不安装额外依赖；Zig 测试程序复用现有编译缓存。`.gitattributes` 固定文本使用 LF，避免 Windows 检出时的 CRLF 转换导致 `zig fmt --check` 失败。
+`.github/workflows/build.yml` 在每次 push、pull request 和手动运行时执行 Windows 构建：格式检查 → 离线单元测试、图像缓存失效测试、输入法焦点与 DPI 测试、窗口位置测试、认证助手 IPC 测试及 TLS/WebSocket 故障测试 → ReleaseSafe 编译 → 上传便携程序（保留 14 天）。不需要 League 客户端或任何账号密钥。故障测试使用运行器预装的 Python 标准库，不安装额外依赖；Zig 测试程序复用现有编译缓存。`.gitattributes` 固定文本使用 LF，避免 Windows 检出时的 CRLF 转换导致 `zig fmt --check` 失败。
 
 缓存分两层：固定版本 Zig/Native SDK 按 bootstrap 脚本内容缓存；Zig 全局编译缓存和项目 `.zig-cache` 按构建配置和源码内容缓存。源码修改时回退到相同构建配置的缓存，复用标准库、C++ 宿主和未变更的编译结果。文档修改可直接命中已有编译缓存；同一分支的新 push 会取消过时任务。Actions 固定到完整 commit SHA。

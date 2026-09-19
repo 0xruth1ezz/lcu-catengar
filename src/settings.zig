@@ -1,6 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
-const Wire = struct { version: u32 = 1, theme: []const u8 = "chatgpt_dark", auto_accept: bool = false, auto_pick: bool = false, priority: []const i32 = &.{} };
+const Wire = struct { version: u32 = 1, theme: []const u8 = @tagName(@import("theme.zig").default_preset), auto_accept: bool = false, auto_pick: bool = false, priority: []const i32 = &.{} };
 pub fn decode(a: std.mem.Allocator, bytes: []const u8) !types.Preferences {
     const p = try std.json.parseFromSlice(Wire, a, bytes, .{ .ignore_unknown_fields = true });
     defer p.deinit();

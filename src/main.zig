@@ -17,12 +17,12 @@ const canvas = native.canvas;
 const App = native.UiApp(Model, Msg);
 const Effects = App.Effects;
 var service: *Service = undefined;
-var app_io: std.Io = undefined;
 var channel: native.ChannelHandle = undefined;
 var instance: @import("instance.zig").Instance = undefined;
 var native_start: ?*const fn (*anyopaque, *native.Runtime) anyerror!void = null;
 var native_runtime: ?*native.Runtime = null;
 var ime: @import("ime.zig").Bridge = .{};
+var window_state: @import("window_state.zig").State = undefined;
 var portrait_loader: ?*portrait_worker.Worker = null;
 var portrait_channel: native.ChannelHandle = undefined;
 
@@ -42,8 +42,6 @@ pub const Model = struct {
     portraits: portraits.Store = .{},
     image_pending: [t.max_champions]bool = @splat(false),
     image_failed: [t.max_champions]bool = @splat(false),
-    elevation_attempted: bool = false,
-    elevation_cancelled: bool = false,
     ui_error: t.Text(160) = .{},
     toasts: toasts.State = .{},
     toast_x: f32 = 0,
@@ -127,7 +125,6 @@ pub const Model = struct {
     }
     pub fn status(self: *const Model) []const u8 {
         if (self.ui_error.len > 0) return self.ui_error.text();
-        if (self.elevation_cancelled) return "管理员授权已取消 · 点击「管理员重试」继续连接";
         return self.snapshot.status.text();
     }
     pub fn phaseLabel(self: *const Model) []const u8 {
@@ -171,7 +168,7 @@ pub const Msg = union(enum) {
     toggle_accept,
     toggle_pick,
     reconnect,
-    elevate,
+    authorize_helper,
     toggle_priority: i32,
     remove: i32,
     move_up: i32,
@@ -208,23 +205,6 @@ fn initFx(model: *Model, fx: *Effects) void {
     if (channel.live()) service.start(notify) catch {
         model.ui_error.set("后台服务启动失败，请重新打开工具。");
     };
-}
-fn requestElevation(model: *Model, fx: *Effects) void {
-    model.elevation_attempted = true;
-    if (win.isAdmin()) {
-        model.ui_error.set("已经以管理员运行，请确认 League 客户端正常启动。");
-        return;
-    }
-    @import("settings.zig").save(std.heap.page_allocator, app_io, service.config_path, &model.preferences) catch {
-        model.ui_error.set("设置保存失败，暂未重启；请检查目录权限后重试。");
-        model.elevation_cancelled = true;
-        return;
-    };
-    if (win.elevate()) {
-        fx.quitApp();
-    } else {
-        model.elevation_cancelled = true;
-    }
 }
 pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
     var changed = false;
@@ -291,7 +271,7 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
         .resized => |size| {
             model.canvas_width = size.width;
             model.canvas_height = size.height;
-            model.library_height = @max(grid.stride, size.height - 480 - titlebar.height - 1);
+            model.library_height = @max(grid.stride, size.height - 418 - titlebar.height - 1);
         },
         .toast_timer => |timer| {
             if (timer.outcome == .fired) model.toasts.expire(win.now()) else model.toasts.count = 0;
@@ -313,7 +293,10 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
             service.reconnect.store(true, .release);
             model.ui_error.set("");
         },
-        .elevate => requestElevation(model, fx),
+        .authorize_helper => {
+            service.auth_retry.store(true, .release);
+            model.ui_error.set("");
+        },
         .snapshot => |event| {
             if (event.kind != .data) return;
             if (instance.takeActivation()) fx.showWindow("main");
@@ -331,7 +314,6 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
                 model.library_scroll = 0;
             }
             observeToasts(model, fx);
-            if (service.needs_admin.load(.acquire) and !model.elevation_attempted and !win.isAdmin()) requestElevation(model, fx);
         },
         .portraits_ready => |event| {
             if (event.kind != .data) return;
@@ -356,7 +338,7 @@ fn toastWindows(model: *const Model, scratch: *App.WindowsScratch) []const App.W
     scratch.windows[0] = .{
         .label = "success-toast",
         .canvas_label = "toast-canvas",
-        .title = "catengar · 操作成功",
+        .title = "Catengar · 操作成功",
         .width = 380,
         .height = 116,
         .x = model.toast_x,
@@ -479,12 +461,15 @@ fn command(name: []const u8) ?Msg {
     return null;
 }
 const tray_items = [_]native.TrayMenuItem{
-    .{ .id = 1, .label = "打开 catengar", .command = "catengar.show" },
+    .{ .id = 1, .label = "打开 Catengar", .command = "catengar.show" },
     .{ .separator = true },
     .{ .id = 2, .label = "完全退出", .command = "catengar.quit" },
 };
 fn startNative(context: *anyopaque, runtime: *native.Runtime) !void {
     native_runtime = runtime;
+    const hwnd = win.mainWindow();
+    window_state.install(hwnd);
+    win.setAuthorizationOwner(hwnd);
     @import("app_icon.zig").applyWindow();
     const palette = themes.palette(service.preferences.theme);
     win.styleMainWindow(palette.dark, palette.surface);
@@ -508,36 +493,16 @@ fn mainView(ui: *canvas.Ui(Msg), model: *const Model) canvas.Ui(Msg).Node {
         canvas.CompiledMarkupView(Model, Msg, @embedFile("app.native")).build(ui, model),
     });
 }
-const scene: native.ShellConfig = .{ .windows = &.{.{ .label = "main", .title = "catengar", .width = 1120, .height = 800, .titlebar = .chromeless, .min_width = 880, .min_height = 720, .close_policy = .hide, .views = &.{.{ .label = "main-canvas", .kind = .gpu_surface, .fill = true }} }} };
-const StartupElevation = enum { unnecessary, cancelled, restarting };
-fn prepareStartup(io: std.Io) StartupElevation {
-    if (preview_catalog.len > 0 or win.isAdmin()) return .unnecessary;
-    // Decide before creating ANY window, tray icon, or service worker. The
-    // elevated process is the only one that should ever become visible.
-    // No-client and transient discovery errors still open a usable normal UI.
-    var credentials = @import("auth.zig").discover(std.heap.page_allocator, io) catch |err| {
-        if (err != error.AdminRequired) return .unnecessary;
-        return if (win.elevate()) .restarting else .cancelled;
-    };
-    @memset(std.mem.asBytes(&credentials), 0);
-    return .unnecessary;
-}
+const scene: native.ShellConfig = .{ .windows = &.{.{ .label = "main", .title = "Catengar", .width = 1120, .height = 800, .restore_state = false, .titlebar = .chromeless, .min_width = 880, .min_height = 720, .close_policy = .hide, .views = &.{.{ .label = "main-canvas", .kind = .gpu_surface, .fill = true }} }} };
 pub fn main(init: std.process.Init) !void {
     defer ime.deinit();
-    app_io = init.io;
     const root = try win.dataDirectory(std.heap.page_allocator);
     defer std.heap.page_allocator.free(root);
-    const args = try init.minimal.args.toSlice(init.arena.allocator());
-    var handoff = false;
-    for (args) |arg| if (std.mem.eql(u8, arg, "--elevated-restart")) {
-        handoff = true;
-    };
-    instance = (try @import("instance.zig").Instance.acquire(std.heap.page_allocator, init.io, root, handoff)) orelse return;
+    instance = (try @import("instance.zig").Instance.acquire(std.heap.page_allocator, init.io, root)) orelse return;
     defer instance.deinit();
-    // Single-instance activation must precede UAC, so opening an already
-    // running app only restores its window without another permission prompt.
-    const startup_elevation = prepareStartup(init.io);
-    if (startup_elevation == .restarting) return;
+    window_state = try @import("window_state.zig").State.init(std.heap.page_allocator, init.io, root);
+    defer window_state.deinit();
+    defer win.setAuthorizationOwner(null);
     service = try std.heap.page_allocator.create(Service);
     service.* = .{};
     defer std.heap.page_allocator.destroy(service);
@@ -550,7 +515,7 @@ pub fn main(init: std.process.Init) !void {
     var fonts: [1]App.FontRegistration = undefined;
     if (font_bytes) |bytes| fonts[0] = .{ .id = 64, .name = "Windows CJK", .ttf = bytes };
     const app = try App.create(std.heap.page_allocator, .{
-        .name = "catengar",
+        .name = "Catengar",
         .scene = scene,
         .canvas_label = "main-canvas",
         .tokens_fn = tokens,
@@ -564,7 +529,7 @@ pub fn main(init: std.process.Init) !void {
         .status_item = .{
             .title = "C",
             .icon_path = icon_path,
-            .tooltip = "catengar · 极地助手",
+            .tooltip = "Catengar · 极地助手",
             .activation_command = "catengar.show",
             .items = &tray_items,
         },
@@ -574,10 +539,6 @@ pub fn main(init: std.process.Init) !void {
     defer if (portrait_loader) |loader| loader.destroy();
     defer app.model.portraits.deinit(std.heap.page_allocator);
     app.model.preferences = service.preferences;
-    // Cancelling the startup prompt opens the normal window exactly once.
-    // The first auth watcher update must not immediately prompt a second time.
-    app.model.elevation_attempted = startup_elevation == .cancelled;
-    app.model.elevation_cancelled = startup_elevation == .cancelled;
     app.model.has_cjk_font = font_bytes != null;
     service.copy(&app.model.snapshot);
     if (preview_catalog.len > 0) {
@@ -589,8 +550,8 @@ pub fn main(init: std.process.Init) !void {
     native_start = native_app.start_fn;
     native_app.start_fn = startNative;
     try runner.runWithOptions(native_app, .{
-        .app_name = "catengar",
-        .window_title = "catengar",
+        .app_name = "Catengar",
+        .window_title = "Catengar",
         .bundle_id = "dev.catengar.lcu",
         .icon_path = icon_path,
         // runWithOptions does not inherit app.zon's permission register.

@@ -26,7 +26,7 @@ pub fn build(comptime Msg: type, ui: *canvas.Ui(Msg), hovered: bool) canvas.Ui(M
                 light(Msg, ui, 0x28c840, 0x1ba832, "maximize-2", .zoom_window, "最大化或还原", hovered),
             }),
             ui.spacer(1),
-            ui.text(.{ .size = .sm, .style_tokens = .{ .foreground = .text_muted } }, "catengar"),
+            ui.text(.{ .size = .sm, .style_tokens = .{ .foreground = .text_muted } }, "Catengar"),
             ui.spacer(1),
             ui.el(.stack, .{ .width = 80 }, .{}),
         }),

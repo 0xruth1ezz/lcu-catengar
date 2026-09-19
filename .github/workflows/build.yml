@@ -47,7 +47,7 @@ jobs:
           path: |
             ${{ runner.temp }}/zig-global-cache
             .zig-cache
-          key: zig-${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/bootstrap.ps1', 'build.zig', 'build.zig.zon', 'app.zon') }}-${{ hashFiles('src/**', 'assets/catengar.ico', 'assets/catengar.rc') }}
+          key: zig-${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/bootstrap.ps1', 'build.zig', 'build.zig.zon', 'app.zon') }}-${{ hashFiles('src/**', 'assets/**') }}
           restore-keys: |
             zig-${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/bootstrap.ps1', 'build.zig', 'build.zig.zon', 'app.zon') }}-
             zig-${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-
@@ -65,6 +65,10 @@ jobs:
           if ($LASTEXITCODE) { throw 'Image cache tests failed' }
           & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-ime --summary all
           if ($LASTEXITCODE) { throw 'Input method tests failed' }
+          & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-window --summary all
+          if ($LASTEXITCODE) { throw 'Window placement tests failed' }
+          & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-auth --summary all
+          if ($LASTEXITCODE) { throw 'Credential helper tests failed' }
 
       - name: Test TLS and WebSocket reconnection offline
         run: |
@@ -82,6 +86,7 @@ jobs:
           name: catengar-windows-x64-${{ github.sha }}
           path: |
             zig-out/bin/catengar.exe
+            zig-out/bin/catengar-auth.exe
             zig-out/bin/catengar-diagnose.exe
             README.md
           if-no-files-found: error
