@@ -122,9 +122,61 @@ def run_tag(root, repository, run_id):
 
 
 def find_release(root, repository, tag):
-    # Pagination includes drafts and fails closed on API/auth errors.
-    pages = json.loads(gh(root, "api", f"repos/{repository}/releases?per_page=100", "--paginate", "--slurp"))
-    return next((release for page in pages for release in page if release["tag_name"] == tag), None)
+    # Look up the pending tag directly: REST's tag endpoint excludes drafts,
+    # and the release list may lag behind a successful create response.
+    owner, name = repository.split("/", 1)
+    query = """query($owner:String!,$name:String!,$tag:String!){
+      repository(owner:$owner,name:$name){
+        release(tagName:$tag){databaseId tagName isDraft url}
+      }
+    }"""
+    response = json.loads(gh(root, "api", "graphql", "-f", f"query={query}",
+                             "-f", f"owner={owner}", "-f", f"name={name}", "-f", f"tag={tag}"))
+    if response.get("errors") or not response.get("data", {}).get("repository"):
+        raise RuntimeError("Could not read the repository's release state; no release will be created.")
+    release = response["data"]["repository"]["release"]
+    if release is None:
+        return None
+    return {"id": release["databaseId"], "tag_name": release["tagName"],
+            "draft": release["isDraft"], "html_url": release["url"]}
+
+
+def create_draft(root, repository, tag, commit):
+    # Keep --verify-tag's guarantee while using the POST response as the source
+    # of truth, instead of discarding it and re-reading a potentially stale list.
+    remote_tag = git(root, "ls-remote", "--exit-code", "origin", f"refs/tags/{tag}").split()
+    if not remote_tag or remote_tag[0] != git(root, "rev-parse", f"refs/tags/{tag}"):
+        raise ValueError("The remote release tag does not match this checkout.")
+    payload = {
+        "tag_name": tag, "target_commitish": commit, "name": f"Catengar {tag}",
+        "draft": True, "prerelease": False, "generate_release_notes": True,
+        "body": (
+            "Windows x64 portable application.\n\n"
+            f"Download `catengar-{tag}-windows-x64.zip`, extract all files into the same "
+            "directory, and launch `catengar.exe`. Keep `catengar-auth.exe` beside it.\n"
+        ),
+    }
+    with tempfile.TemporaryDirectory(prefix="catengar-release-request-") as directory:
+        request = Path(directory) / "release.json"
+        request.write_text(json.dumps(payload), encoding="utf-8")
+        release = json.loads(gh(root, "api", f"repos/{repository}/releases", "--method", "POST",
+                                "--input", str(request)))
+    if release.get("tag_name") != tag or not release.get("id") or not release.get("html_url"):
+        raise RuntimeError("The create response did not identify the requested release; rerun to recover it.")
+    require_draft(release)
+    return release
+
+
+def checkout_source(root, ref):
+    # A retry builds the original tagged application, but must keep the fixed
+    # release helper for the later package/upload steps (including older runs
+    # whose workflow still invokes scripts/release.py directly).
+    helper = root / "scripts/release.py"
+    active_helper = helper.read_bytes() if helper.is_file() else None
+    git(root, "checkout", "--detach", ref)
+    if active_helper is not None:
+        helper.parent.mkdir(parents=True, exist_ok=True)
+        helper.write_bytes(active_helper)
 
 
 def require_draft(release):
@@ -145,10 +197,10 @@ def prepare(root, repository, branch, run_id, requested="", bump="patch"):
             raise ValueError("The requested version differs from this run's existing tag.")
         release = find_release(root, repository, tag)
         require_draft(release)
-        git(root, "checkout", "--detach", f"refs/tags/{tag}")
+        checkout_source(root, f"refs/tags/{tag}")
         verify_version(root, version)
     else:
-        git(root, "checkout", "--detach", f"refs/remotes/origin/{branch}")
+        checkout_source(root, f"refs/remotes/origin/{branch}")
         version = next_version(current_version(root), requested, bump)
         tag = f"v{version}"
         if tag in git(root, "tag", "--list").splitlines():
@@ -168,20 +220,7 @@ def prepare(root, repository, branch, run_id, requested="", bump="patch"):
 
     commit = git(root, "rev-parse", "HEAD")
     if release is None:
-        with tempfile.TemporaryDirectory(prefix="catengar-release-notes-") as directory:
-            notes = Path(directory) / "notes.md"
-            notes.write_text(
-                f"Windows x64 portable application.\n\n"
-                f"Download `catengar-{tag}-windows-x64.zip`, extract all files into the same "
-                "directory, and launch `catengar.exe`. Keep `catengar-auth.exe` beside it.\n",
-                encoding="utf-8",
-            )
-            gh(root, "release", "create", tag, "--repo", repository, "--draft", "--verify-tag",
-               "--target", commit, "--title", f"Catengar {tag}", "--notes-file", str(notes),
-               "--generate-notes")
-        release = find_release(root, repository, tag)
-    if release is None:
-        raise RuntimeError("The draft release could not be read after creation; rerun this workflow.")
+        release = create_draft(root, repository, tag, commit)
     require_draft(release)
     return {"version": version, "tag": tag, "commit": commit, "release_url": release["html_url"]}
 

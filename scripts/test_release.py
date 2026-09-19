@@ -102,20 +102,31 @@ class GitHubFixture:
         self.creates = 0
         self.uploads = []
         self.fail_create = False
+        self.hide_lookup = False
+        self.lookups = 0
 
     def __call__(self, root, *args):
-        if args[0] == "api":
-            # Include an empty page to exercise the paginated response shape.
-            return json.dumps([[], self.releases])
-        if args[:2] == ("release", "create"):
+        if args[:2] == ("api", "graphql"):
+            self.lookups += 1
+            tag = next(value.removeprefix("tag=") for value in args if value.startswith("tag="))
+            found = next((item for item in self.releases if item["tag_name"] == tag), None)
+            item = None
+            if found and not self.hide_lookup:
+                item = {"databaseId": found["id"], "tagName": found["tag_name"],
+                        "isDraft": found["draft"], "url": found["html_url"]}
+            return json.dumps({"data": {"repository": {"release": item}}})
+        if args[:2] == ("api", "repos/fixture/catengar/releases") and "POST" in args:
             if self.fail_create:
                 raise RuntimeError("Simulated GitHub outage after tag push")
-            assert "--draft" in args and "--verify-tag" in args
-            assert Path(args[args.index("--notes-file") + 1]).is_file()
+            payload = json.loads(Path(args[args.index("--input") + 1]).read_text(encoding="utf-8"))
+            assert payload["draft"] is True and payload["prerelease"] is False
+            assert payload["generate_release_notes"] is True
+            assert "catengar-auth.exe" in payload["body"]
             self.creates += 1
-            tag = args[2]
-            self.releases.append({"tag_name": tag, "draft": True, "html_url": f"https://example.test/{tag}"})
-            return self.releases[-1]["html_url"]
+            tag = payload["tag_name"]
+            self.releases.append({"id": self.creates, "tag_name": tag, "draft": True,
+                                  "html_url": f"https://example.test/untagged-{self.creates}"})
+            return json.dumps(self.releases[-1])
         if args[:2] == ("release", "upload"):
             self.uploads.append(args)
             return ""
@@ -189,6 +200,51 @@ class PrepareTests(ReleaseFilesFixture):
         result = self.prepare(root=self.clone("retry"))
         self.assertEqual(result["version"], "0.1.1")
         self.assertEqual(self.api.creates, 1)
+
+    def test_create_response_succeeds_even_when_release_lookup_is_stale(self):
+        self.api.hide_lookup = True
+        result = self.prepare()
+        self.assertEqual(result["release_url"], "https://example.test/untagged-1")
+        self.assertEqual(result["tag"], "v0.1.1")
+        self.assertEqual(self.api.lookups, 1)
+        self.assertEqual(self.api.creates, 1)
+
+    def test_retry_preserves_fixed_helper_when_building_original_tag(self):
+        helper = self.root / "scripts/release.py"
+        helper.parent.mkdir()
+        helper.write_text("# original release helper\n")
+        release.git(self.root, "add", "scripts/release.py")
+        release.git(self.root, "commit", "-m", "Original release tooling")
+        release.git(self.root, "push", "origin", "HEAD:main")
+        original = self.prepare()
+
+        helper.write_text("# corrected release helper\n")
+        release.git(self.root, "add", "scripts/release.py")
+        release.git(self.root, "commit", "-m", "Fix release tooling after failed run")
+        release.git(self.root, "push", "origin", "HEAD:main")
+        retry = self.clone("retry")
+        result = self.prepare(root=retry)
+
+        self.assertEqual(result, original)
+        self.assertEqual((retry / "scripts/release.py").read_text(), "# corrected release helper\n")
+        self.assertEqual(release.git(retry, "show", "HEAD:scripts/release.py"), "# original release helper")
+        self.assertEqual(release.git(retry, "diff", "--name-only"), "scripts/release.py")
+        self.assertEqual(self.api.creates, 1)
+
+    def test_missing_remote_tag_cannot_be_silently_recreated_by_release_api(self):
+        result = self.prepare()
+        release.git(self.remote, "update-ref", "-d", "refs/tags/v0.1.1")
+        with self.assertRaises(RuntimeError):
+            release.create_draft(self.root, "fixture/catengar", result["tag"], result["commit"])
+        self.assertEqual(self.api.creates, 1)
+
+    def test_graphql_errors_do_not_look_like_a_missing_release(self):
+        response = json.dumps({"errors": [{"message": "Forbidden"}], "data": {"repository": None}})
+        with patch.object(release, "gh", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "release state"):
+                self.prepare()
+        self.assertEqual(release.current_version(self.root), "0.1.0")
+        self.assertEqual(release.git(self.remote, "tag", "--list"), "")
 
     def test_published_release_cannot_be_rebuilt_or_overwritten(self):
         result = self.prepare()
