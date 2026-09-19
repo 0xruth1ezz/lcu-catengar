@@ -49,21 +49,3 @@ pub fn connectionNotice(s: *const t.Snapshot) []const u8 {
         .failed => "暂时无法连接客户端。请确认客户端已启动后重试；仍无响应时重新打开工具。",
     };
 }
-
-pub fn acceptLabel(p: *const t.Preferences, s: *const t.Snapshot) []const u8 {
-    if (!p.auto_accept) return "适用于所有队列";
-    if (!s.connected) return "已开启 · 等待客户端连接";
-    if (phase(s, "ReadyCheck")) return "已开启 · 匹配确认阶段";
-    if (phase(s, "ChampSelect") or phase(s, "InProgress") or phase(s, "GameStart")) return "已开启 · 等待下一次匹配";
-    return "已开启 · 匹配成功后自动确认";
-}
-
-pub fn pickLabel(p: *const t.Preferences, s: *const t.Snapshot) []const u8 {
-    if (!p.auto_pick) return "";
-    if (p.count == 0) return "已开启 · 请先添加优先英雄";
-    if (!s.connected) return "已开启 · 等待客户端连接";
-    if (!phase(s, "ChampSelect")) return "已开启 · 等待进入选人";
-    const supported = s.pick_supported orelse return "已开启 · 正在确认对局模式";
-    if (!supported) return "当前模式不支持自动选取";
-    return "已开启 · 等待更高优先级的可用英雄";
-}

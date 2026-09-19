@@ -17,6 +17,9 @@ const toast_timer_key = 71;
 const profile_copy_timer_key = 72;
 const profile_image_id = 0x50524f46;
 const profile_job_index = t.max_champions;
+const app_author = "0xruth1ezz";
+const app_repository = app_author ++ "/lcu-catengar";
+const app_repository_url = "https://github.com/" ++ app_repository;
 pub const panic = std.debug.FullPanic(native.debug.capturePanic);
 const canvas = native.canvas;
 const App = native.UiApp(Model, Msg);
@@ -39,6 +42,9 @@ pub const Model = struct {
     snapshot: t.Snapshot = .{},
     preferences: t.Preferences = .{},
     theme_picker_open: bool = false,
+    about_open: bool = false,
+    about_link_failed: bool = false,
+    about_return_focus: bool = false,
     page: enum { home, settings, logs } = .home,
     journal_page: journal.Page = .{},
     log_scroll: f32 = 0,
@@ -85,6 +91,18 @@ pub const Model = struct {
     }
     pub fn versionLabel(_: *const Model) []const u8 {
         return @import("catengar_options").version_label;
+    }
+    pub fn aboutVersion(_: *const Model) []const u8 {
+        return @import("catengar_options").version;
+    }
+    pub fn aboutAuthor(_: *const Model) []const u8 {
+        return app_author;
+    }
+    pub fn aboutRepository(_: *const Model) []const u8 {
+        return app_repository;
+    }
+    pub fn aboutLogo(self: *const Model) u64 {
+        return if (self.titlebar_logo_ready) @import("app_icon.zig").titlebar_image_id else 0;
     }
     pub fn isHome(self: *const Model) bool {
         return self.page == .home;
@@ -218,12 +236,6 @@ pub const Model = struct {
     pub fn canReconnect(self: *const Model) bool {
         return !self.snapshot.connected and self.snapshot.connection != .authorizing and !self.canAuthorize();
     }
-    pub fn acceptStatus(self: *const Model) []const u8 {
-        return ui_state.acceptLabel(&self.preferences, &self.snapshot);
-    }
-    pub fn pickStatus(self: *const Model) []const u8 {
-        return ui_state.pickLabel(&self.preferences, &self.snapshot);
-    }
     pub fn selecting(self: *const Model) bool {
         return self.snapshot.connected and std.mem.eql(u8, self.snapshot.phase.text(), "ChampSelect") and self.snapshot.pick_supported == true;
     }
@@ -255,6 +267,9 @@ pub const Msg = union(enum) {
     close_theme_picker,
     toggle_settings,
     toggle_diagnostics,
+    open_about,
+    close_about,
+    open_repository,
     open_logs,
     go_home,
     latest_logs,
@@ -337,7 +352,26 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
     switch (msg) {
         .toggle_theme_picker => model.theme_picker_open = !model.theme_picker_open,
         .close_theme_picker => model.theme_picker_open = false,
+        .open_about => {
+            model.about_open = true;
+            model.about_link_failed = false;
+            model.about_return_focus = false;
+            model.theme_picker_open = false;
+        },
+        .close_about => {
+            model.about_open = false;
+            model.about_return_focus = true;
+        },
+        .open_repository => {
+            model.about_link_failed = false;
+            if (native_runtime) |runtime| {
+                runtime.openExternalUrl(app_repository_url) catch {
+                    model.about_link_failed = true;
+                };
+            } else model.about_link_failed = true;
+        },
         .toggle_settings => {
+            model.about_return_focus = false;
             model.page = if (model.page == .settings) .home else .settings;
             model.theme_picker_open = false;
             model.confirm_clear_logs = false;
@@ -733,10 +767,30 @@ fn startNative(context: *anyopaque, runtime: *native.Runtime) !void {
     if (native_start) |start| try start(context, runtime);
 }
 fn mainView(ui: *canvas.Ui(Msg), model: *const Model) canvas.Ui(Msg).Node {
-    return ui.column(.{ .grow = 1, .style_tokens = .{ .background = .background } }, .{
+    var content = ui.column(.{ .grow = 1, .style_tokens = .{ .background = .background } }, .{
         titlebar.build(Msg, ui, model.titlebar_hover, model.titlebar_logo_ready),
         canvas.CompiledMarkupView(Model, Msg, @embedFile("app.native")).build(ui, model),
     });
+    if (model.about_open) content = disableBackground(ui, content);
+    return ui.el(.stack, .{ .grow = 1 }, .{
+        content,
+        if (model.about_open) canvas.CompiledMarkupView(Model, Msg, @embedFile("about.native")).build(ui, model) else ui.el(.stack, .{}, .{}),
+    });
+}
+// Native's disabled flag is per-widget, not inherited. Keep the backdrop
+// visible while excluding every underlying control from pointer/Tab routing.
+fn disableBackground(ui: *canvas.Ui(Msg), source: canvas.Ui(Msg).Node) canvas.Ui(Msg).Node {
+    var node = source;
+    node.widget.state.disabled = true;
+    if (source.nodes.len > 0) {
+        const children = ui.arena.dupe(canvas.Ui(Msg).Node, source.nodes) catch {
+            ui.failed = true;
+            return node;
+        };
+        for (children) |*child| child.* = disableBackground(ui, child.*);
+        node.nodes = children;
+    }
+    return node;
 }
 const scene: native.ShellConfig = .{ .windows = &.{.{ .label = "main", .title = "Catengar", .width = 1120, .height = 800, .restore_state = false, .titlebar = .chromeless, .min_width = 880, .min_height = 720, .close_policy = .hide, .views = &.{.{ .label = "main-canvas", .kind = .gpu_surface, .fill = true }} }} };
 pub fn main(init: std.process.Init) !void {
@@ -804,7 +858,10 @@ pub fn main(init: std.process.Init) !void {
         .icon_path = icon_path,
         // runWithOptions does not inherit app.zon's permission register.
         // Honor its filesystem grant for our existing local LCU cache.
-        .security = .{ .permissions = &.{native.security.permission_filesystem} },
+        .security = .{
+            .permissions = &.{native.security.permission_filesystem},
+            .navigation = .{ .external_links = .{ .action = .open_system_browser, .allowed_urls = &.{app_repository_url} } },
+        },
         .default_frame = native.geometry.RectF.init(0, 0, 1120, 800),
         .js_window_api = false,
     }, init);

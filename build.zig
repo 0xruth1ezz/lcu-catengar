@@ -11,6 +11,7 @@ pub fn build(b: *std.Build) void {
     else
         b.fmt("v{s}", .{version_text});
     options.addOption([]const u8, "version_label", version_label);
+    options.addOption([]const u8, "version", version_text);
     options.addOption([]const u8, "preview_catalog", b.option([]const u8, "preview-catalog", "Read-only UI preview using a local catalog fixture (no LCU connection or settings writes)") orelse "");
     app.exe.root_module.addOptions("catengar_options", options);
     app.exe.root_module.linkSystemLibrary("winhttp", .{});

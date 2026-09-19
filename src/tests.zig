@@ -761,33 +761,6 @@ test "ranked session is gated before champion selection endpoints" {
     try testing.expectEqual(@as(?bool, false), state.pick_supported);
 }
 
-test "automation labels distinguish saved switches from connection and queue readiness" {
-    const ui = @import("ui_state.zig");
-    const state = try a.create(t.Snapshot);
-    defer a.destroy(state);
-    state.* = .{};
-    var prefs: t.Preferences = .{};
-    try testing.expectEqualStrings("适用于所有队列", ui.acceptLabel(&prefs, state));
-    try testing.expectEqualStrings("", ui.pickLabel(&prefs, state));
-    prefs.auto_accept = true;
-    prefs.auto_pick = true;
-    try testing.expectEqualStrings("已开启 · 请先添加优先英雄", ui.pickLabel(&prefs, state));
-    prefs.add(107);
-    try testing.expectEqualStrings("已开启 · 等待客户端连接", ui.pickLabel(&prefs, state));
-    try testing.expectEqualStrings("已开启 · 等待客户端连接", ui.acceptLabel(&prefs, state));
-    state.connected = true;
-    state.phase.set("ChampSelect");
-    try testing.expectEqualStrings("已开启 · 正在确认对局模式", ui.pickLabel(&prefs, state));
-    state.pick_supported = false;
-    try testing.expectEqualStrings("当前模式不支持自动选取", ui.pickLabel(&prefs, state));
-    state.pick_supported = true;
-    try testing.expectEqualStrings("已开启 · 等待更高优先级的可用英雄", ui.pickLabel(&prefs, state));
-    state.connected = false;
-    try testing.expectEqualStrings("已开启 · 等待客户端连接", ui.pickLabel(&prefs, state));
-    try testing.expect(prefs.auto_accept and prefs.auto_pick);
-    try testing.expectEqual(@as(usize, 1), prefs.count);
-}
-
 test "connection notices keep actionable failures visible without surfacing protocol logs" {
     const ui = @import("ui_state.zig");
     const state = try a.create(t.Snapshot);

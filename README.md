@@ -2,7 +2,9 @@
 
 Windows 上的 League Client 小工具。界面使用 [vercel-labs/native](https://github.com/vercel-labs/native)，业务和通信使用 **Zig 0.16.0**，没有 WebView、Node 或浏览器运行时。
 
-应用名旁显示当前版本号，当前为 **v0.1**。版本从 `app.zon` 的 `version` 字段生成；构建元数据使用完整语义版本 `0.1.0`，界面省略为零的补丁号。
+应用名旁显示当前版本号，版本从 `app.zon` 的 `version` 字段生成。构建元数据使用完整语义版本；界面仅省略为零的补丁号，例如 `0.1.0` 显示为 **v0.1**，`0.1.1` 显示为 **v0.1.1**。
+
+「设置 → 关于」显示应用简介、完整版本号、作者和 GitHub 仓库，可点击「打开 GitHub」在默认浏览器中查看项目。关于窗口跟随当前主题，支持 Escape、点击窗口外部或关闭按钮返回设置。
 
 ## 使用
 
@@ -22,7 +24,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Test
 1. 打开 League 客户端和工具。工具通过隐藏的 PowerShell 子进程读取 `LeagueClientUx.exe` 的命令行，获取 `--app-port` 和 `--remoting-auth-token`。
 2. 主程序以普通权限直接显示窗口，不因认证而重启。后台先尝试普通权限读取，只有需要提权时才通过 UAC 启动独立的 **`catengar-auth.exe` 认证助手**。助手仅持续读取 League 客户端命令行，主界面、配置保存、REST/WebSocket 和自动化仍由普通权限主程序负责。取消授权不会反复弹窗，可点击「授权连接」重试；客户端未启动时不会请求管理员权限。
 3. 英雄库与优先顺序位于同一块面板。英雄库采用连续滚动的头像网格，没有分页或头像下方的名称。按客户端语言的名称或英文名搜索，点击整张卡片加入优先选择，右上角勾选表示已选择，再次点击取消；使用右侧上下箭头设置优先级。最多 32 位，达到上限后仍可点击已选卡片取消，排在前面的优先。
-4. 顶部「自动接受对局」和整个英雄面板顶部的「自动选取英雄」分别控制两项功能。自动选取是英雄功能区的总开关，关闭时仍可编辑偏好。首次运行两个开关都关闭，后续恢复保存的设置。开关本身表示启停状态，开启后补充等待客户端、等待选人或当前模式不支持的说明；断线不会改变已保存的开关偏好。
+4. 顶部「自动接受对局」和整个英雄面板顶部的「自动选取英雄」分别控制两项功能。自动选取是英雄功能区的总开关，关闭时仍可编辑偏好。首次运行两个开关都关闭，后续恢复保存的设置。启停状态由开关本身表示；断线不会改变已保存的开关偏好。
 5. 点击右上方「设置」，在「外观」中选择经典金色、ChatGPT 深色、ChatGPT 浅色、Nord 北欧或 Catppuccin，默认使用经典金色。立即生效，无需重启，选择自动保存到本地设置的 `theme` 字段，下次启动会恢复。设置页也提供重新连接和默认收起的诊断信息；使用「返回」回到英雄选择，搜索与优先顺序会保留。
 
 主界面集中展示英雄库、优先顺序和当前功能状态，选人期间才显示当前英雄与可用池。右上方「日志」提供独立的活动记录页面；资源计数及本次接受/选取次数位于「设置 → 诊断」。需要处理的连接或授权问题、设置或日志保存失败仍直接提示。成功反馈沿用独立提示窗，不在主界面重复展示历史结果。
@@ -151,3 +153,29 @@ UI 调试可使用 `zig build -Doptimize=ReleaseSafe -Dautomation=true`。Native
 `.github/workflows/build.yml` 在每次 push、pull request 和手动运行时执行 Windows 构建：格式检查 → 离线单元测试、图像缓存失效测试、输入法焦点与 DPI 测试、窗口位置测试、认证助手 IPC 测试及 TLS/WebSocket 故障测试 → ReleaseSafe 编译 → 上传便携程序（保留 14 天）。不需要 League 客户端或任何账号密钥。故障测试使用运行器预装的 Python 标准库，不安装额外依赖；Zig 测试程序复用现有编译缓存。`.gitattributes` 固定文本使用 LF，避免 Windows 检出时的 CRLF 转换导致 `zig fmt --check` 失败。
 
 缓存分两层：固定版本 Zig/Native SDK 按 bootstrap 脚本内容缓存；Zig 全局编译缓存和项目 `.zig-cache` 按构建配置和源码内容缓存。源码修改时回退到相同构建配置的缓存，复用标准库、C++ 宿主和未变更的编译结果。文档修改可直接命中已有编译缓存；同一分支的新 push 会取消过时任务。Actions 固定到完整 commit SHA。
+
+## 创建 Release
+
+在 GitHub 的 **Actions → Create release → Run workflow** 中选择默认分支运行 `.github/workflows/release.yml`：
+
+- `version` 可选：填写 `0.2.0` 或 `v0.2.0`，优先使用指定版本。必须大于 `app.zon` 中的当前版本；只接受三段数字正式版本，每段不超过 65535（Windows 版本资源限制）。
+- 留空 `version` 时，按 `bump` 自动升级：默认 `patch`（`0.1.0 → 0.1.1`）；也可选 `minor`（`0.1.0 → 0.2.0`）或 `major`（`0.1.0 → 1.0.0`）。
+
+也可以使用 GitHub CLI：
+
+```powershell
+# 自动升级 patch
+gh workflow run release.yml
+# 指定版本；此时忽略 bump
+gh workflow run release.yml -f version=0.2.0
+# 自动升级 minor
+gh workflow run release.yml -f bump=minor
+```
+
+工作流同步更新 `app.zon` 及两个 Windows `.rc` 文件的版本，将版本提交与 `vX.Y.Z` 标签一起推送到默认分支，然后创建带自动生成更新说明的 **draft release**。格式检查、离线测试与 ReleaseSafe 构建通过后，生成 `catengar-vX.Y.Z-windows-x64.zip` 并上传至该草稿的 release assets。ZIP 根目录包含 `catengar.exe`、`catengar-auth.exe`、`catengar-diagnose.exe` 和 `README.md`；解压后保持三个程序在同一目录。应用显示版本和 EXE 版本资源来自本次升级后的源码。
+
+完成后从运行摘要打开草稿，检查附件与说明，再手动发布。失败时使用该次运行的 **Re-run jobs**：同一运行会复用原标签、提交及草稿，即使默认分支已继续更新也不会再次升级版本；已发布的 release 不会被覆盖。重新点击 **Run workflow** 则表示创建下一版本。构建失败会保留版本提交、标签和草稿，方便重试。
+
+工作流使用内置 `GITHUB_TOKEN` 的 `contents: write` 权限，不需要额外 PAT。仓库策略需允许 Actions 向默认分支及版本标签推送；保护规则拒绝时会明确失败，不会强制推送或绕过规则。所有 release 运行共享并发组；GitHub 默认最多保留一个等待中的运行，连续点击多次可能替换较早的等待项，请等待当前发布构建完成后再创建下一版。
+
+发布工具的离线回归测试使用临时本地 Git 仓库与模拟 GitHub API，不会创建真实 release：`python -B -m unittest discover -s scripts -p test_release.py -v`。普通 CI 和 release 工作流都会执行这些测试。

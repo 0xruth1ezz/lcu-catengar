@@ -98,16 +98,21 @@
           </column>
         </scroll>
       </if>
+      <separator/>
+      <row cross="center" gap="16">
+        <column grow="1" gap="4"><text>关于 Catengar</text><text size="sm" foreground="text_muted">版本、作者与项目仓库</text></column>
+        <button variant="outline" icon="info" on-press="open_about" autofocus="{about_return_focus}" label="关于 Catengar">关于</button>
+      </row>
     </column>
   </if>
   <if test="{isHome}">
     <row cross="center" gap="16" background="surface" radius="lg" padding="16">
-      <column grow="1" gap="4"><text>自动接受对局</text><text size="sm" foreground="text_muted">{acceptStatus}</text></column>
+      <text grow="1">自动接受对局</text>
       <switch checked="{preferences.auto_accept}" on-toggle="toggle_accept" label="自动接受对局开关"/>
     </row>
     <column gap="16" grow="1" background="surface" radius="lg" padding="18" label="英雄选择">
       <row cross="center" gap="16" label="自动选取总开关">
-        <column grow="1" gap="4"><text>自动选取英雄</text><if test="{preferences.auto_pick}"><text size="sm" foreground="text_muted" wrap="true">{pickStatus}</text></if></column>
+        <text grow="1">自动选取英雄</text>
         <switch checked="{preferences.auto_pick}" on-toggle="toggle_pick" label="自动选取英雄开关"/>
       </row>
       <separator/>

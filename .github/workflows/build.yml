@@ -57,6 +57,11 @@ jobs:
           & .tools/zig-x86_64-windows-0.16.0/zig.exe fmt --check build.zig build.zig.zon app.zon src
           if ($LASTEXITCODE) { throw 'Zig formatting check failed' }
 
+      - name: Test release tooling
+        run: |
+          python -B -m unittest discover -s scripts -p test_release.py -v
+          if ($LASTEXITCODE) { throw 'Release tooling tests failed' }
+
       - name: Run offline tests
         run: |
           & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-core --summary all

@@ -1,0 +1,147 @@
+name: Create release
+run-name: Release ${{ inputs.version || inputs.bump }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Optional version (for example 0.2.0 or v0.2.0); blank = automatic bump'
+        required: false
+        type: string
+      bump:
+        description: Version bump when version is blank
+        required: true
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+# Serialize version commits and tags across all release runs.
+concurrency:
+  group: catengar-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CACHE_VERSION: v1
+      PYTHONDONTWRITEBYTECODE: '1'
+      RELEASE_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Require the default branch
+        run: |
+          if ($env:GITHUB_REF -ne "refs/heads/$env:RELEASE_BRANCH") {
+            throw 'Run Create release from the default branch.'
+          }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          # The preparation step atomically pushes the version commit and tag.
+          persist-credentials: true
+
+      - name: Test release tooling
+        run: |
+          python -B -m unittest discover -s scripts -p test_release.py -v
+          if ($LASTEXITCODE) { throw 'Release tooling tests failed' }
+
+      - name: Bump version and create draft release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_BUMP: ${{ inputs.bump }}
+        run: |
+          python -B scripts/release.py prepare --bump $env:RELEASE_BUMP
+          if ($LASTEXITCODE) { throw 'Release preparation failed' }
+
+      - name: Set compiler cache directory
+        run: '"ZIG_GLOBAL_CACHE_DIR=$env:RUNNER_TEMP/zig-global-cache" >> $env:GITHUB_ENV'
+
+      - name: Cache pinned toolchain and Native SDK
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .tools/zig-x86_64-windows-0.16.0
+            .tools/native
+          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/bootstrap.ps1', 'scripts/patch-native.ps1') }}
+
+      - name: Install verified dependencies
+        run: ./scripts/bootstrap.ps1
+
+      - name: Restore Zig compiler and build caches
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/zig-global-cache
+            .zig-cache
+          key: zig-${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/bootstrap.ps1', 'build.zig', 'build.zig.zon', 'app.zon') }}-${{ hashFiles('src/**', 'assets/**') }}
+          restore-keys: |
+            zig-${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/bootstrap.ps1', 'build.zig', 'build.zig.zon', 'app.zon') }}-
+            zig-${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Check Zig formatting
+        run: |
+          & .tools/zig-x86_64-windows-0.16.0/zig.exe fmt --check build.zig build.zig.zon app.zon src
+          if ($LASTEXITCODE) { throw 'Zig formatting check failed' }
+
+      - name: Run offline tests
+        run: |
+          & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-core test-images test-ime test-window test-auth --summary all
+          if ($LASTEXITCODE) { throw 'Offline tests failed' }
+          python scripts/test-transport.py
+          if ($LASTEXITCODE) { throw 'Transport fault tests failed' }
+
+      - name: Build Windows executables
+        run: |
+          & .tools/zig-x86_64-windows-0.16.0/zig.exe build -Doptimize=ReleaseSafe --summary all
+          if ($LASTEXITCODE) { throw 'Windows build failed' }
+
+      - name: Create versioned portable ZIP
+        id: package
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          python -B scripts/release.py package --version $env:RELEASE_VERSION
+          if ($LASTEXITCODE) { throw 'Release packaging failed' }
+
+      - name: Upload ZIP to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_ARCHIVE: ${{ steps.package.outputs.archive }}
+        run: |
+          python -B scripts/release.py upload --tag $env:RELEASE_TAG --archive $env:RELEASE_ARCHIVE
+          if ($LASTEXITCODE) { throw 'Release asset upload failed' }
+
+      - name: Link draft in run summary
+        if: ${{ always() && steps.release.outputs.release_url != '' }}
+        env:
+          RELEASE_URL: ${{ steps.release.outputs.release_url }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+          RELEASE_STATUS: ${{ job.status }}
+        run: |
+          @"
+          ## Catengar $env:RELEASE_TAG
+
+          [Open draft release]($env:RELEASE_URL)
+
+          - Commit: $env:RELEASE_COMMIT
+          - Asset: catengar-$env:RELEASE_TAG-windows-x64.zip
+          - Build and upload: $env:RELEASE_STATUS
+
+          Review the ZIP and release notes, then publish the draft manually.
+          If a step failed, rerun this workflow run to reuse its version and draft.
+          "@ >> $env:GITHUB_STEP_SUMMARY

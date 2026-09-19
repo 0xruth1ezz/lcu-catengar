@@ -1,0 +1,23 @@
+<column grow="1" main="center" cross="center" label="关于窗口">
+  <dialog width="480" padding="28" background="surface" radius="lg" on-dismiss="close_about" label="关于 Catengar">
+    <column gap="24">
+      <row cross="center" gap="16">
+        <if test="{titlebar_logo_ready}"><image image="{aboutLogo}" width="64" height="64" label="Catengar logo"/></if>
+        <column grow="1" gap="6"><text size="heading">Catengar</text><text foreground="text_muted">League 助手</text></column>
+        <button variant="ghost" size="icon" icon="x" on-press="close_about" label="关闭关于窗口"/>
+      </row>
+      <text foreground="text_muted" wrap="true">自动接受对局，按你的优先顺序选取英雄。</text>
+      <separator/>
+      <column gap="16">
+        <row gap="16"><text width="72" foreground="text_muted">版本</text><text grow="1">{aboutVersion}</text></row>
+        <row gap="16"><text width="72" foreground="text_muted">作者</text><text grow="1">{aboutAuthor}</text></row>
+        <row gap="16"><text width="72" foreground="text_muted">GitHub</text><text grow="1" wrap="true">{aboutRepository}</text></row>
+      </column>
+      <if test="{about_link_failed}"><text size="sm" foreground="destructive" wrap="true">无法打开浏览器，请重试或访问 github.com/{aboutRepository}。</text></if>
+      <row main="end" cross="center" gap="8">
+        <button variant="ghost" on-press="close_about" autofocus="true">关闭</button>
+        <button variant="primary" icon="external-link" on-press="open_repository" label="在浏览器中打开 GitHub 仓库">打开 GitHub</button>
+      </row>
+    </column>
+  </dialog>
+</column>
