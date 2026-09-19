@@ -26,6 +26,7 @@ pub const Preferences = struct {
     theme: @import("theme.zig").Preset = @import("theme.zig").default_preset,
     auto_accept: bool = false,
     auto_pick: bool = false,
+    always_prioritize: bool = true,
     priority: [max_priority]i32 = @splat(0),
     count: usize = 0,
     pub fn ids(self: *const Preferences) []const i32 {
@@ -122,6 +123,7 @@ pub const Snapshot = struct {
     connection: ConnectionState = .connecting,
     settings_error: Text(192) = .{},
     pick_supported: ?bool = null,
+    pick_completed: bool = false,
     websocket: bool = false,
     status: Text(192) = Text(192).init("正在寻找 League 客户端…"),
     phase: Text(64) = Text(64).init("未连接"),

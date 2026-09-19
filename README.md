@@ -1,6 +1,6 @@
 # Catengar
 
-Windows 上的 League Client 小工具。界面使用 [vercel-labs/native](https://github.com/vercel-labs/native)，业务和通信使用 **Zig 0.16.0**，没有 WebView、Node 或浏览器运行时。
+Windows 上的 League Client 小工具。界面使用 [vercel-labs/native](https://github.com/vercel-labs/native)，业务和通信使用 **Zig 0.16.0**。主界面使用原生渲染；英雄详情仅保留「haidou.pro」Tab，使用 Microsoft Edge WebView2 加载对应英雄网页，无需 Node。
 
 应用名旁显示当前版本号，版本从 `app.zon` 的 `version` 字段生成。构建元数据使用完整语义版本；界面仅省略为零的补丁号，例如 `0.1.0` 显示为 **v0.1**，`0.1.1` 显示为 **v0.1.1**。
 
@@ -21,10 +21,12 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Test
 
 构建后直接打开 `zig-out/bin/catengar.exe`，不需要安装 Zig。分发时必须将 `catengar.exe` 与 `catengar-auth.exe` 放在同一目录；`catengar-diagnose.exe` 是可选的命令行诊断工具。首次构建需要网络下载 Zig 与 Native SDK，之后可以离线构建。SDK 固定在 `6b053188dc8ac415f602618be12717889cb0a986`，下载归档校验 SHA-256；不需要 npm。
 
+英雄详情的「haidou.pro」Tab 需要系统安装 Microsoft Edge WebView2 Runtime，分发时一并保留构建输出中的 `WebView2Loader.dll` 和 `WebView2-LICENSE.txt`。无法启动内嵌网页时，浮窗提示安装 Runtime，并提供重试和「浏览器打开」；自动选人功能仍可使用。海斗网页使用公共 HTTPS 地址，与 LCU 通信分离，不发送本地客户端认证信息。
+
 1. 打开 League 客户端和工具。工具通过隐藏的 PowerShell 子进程读取 `LeagueClientUx.exe` 的命令行，获取 `--app-port` 和 `--remoting-auth-token`。
 2. 主程序以普通权限直接显示窗口，不因认证而重启。后台先尝试普通权限读取，只有需要提权时才通过 UAC 启动独立的 **`catengar-auth.exe` 认证助手**。助手仅持续读取 League 客户端命令行，主界面、配置保存、REST/WebSocket 和自动化仍由普通权限主程序负责。取消授权不会反复弹窗，可点击「授权连接」重试；客户端未启动时不会请求管理员权限。
-3. 英雄库与优先顺序位于同一块面板。英雄库采用连续滚动的头像网格，没有分页或头像下方的名称。按客户端语言的名称或英文名搜索，点击整张卡片加入优先选择，右上角勾选表示已选择，再次点击取消；使用右侧上下箭头设置优先级。最多 32 位，达到上限后仍可点击已选卡片取消，排在前面的优先。
-4. 顶部「自动接受对局」和整个英雄面板顶部的「自动选取英雄」分别控制两项功能。自动选取是英雄功能区的总开关，关闭时仍可编辑偏好。首次运行两个开关都关闭，后续恢复保存的设置。启停状态由开关本身表示；断线不会改变已保存的开关偏好。
+3. 英雄库与优先顺序位于同一块面板。英雄库采用连续滚动的头像网格，没有分页或头像下方的名称。按客户端语言的名称或英文名搜索，**仅点击卡片右上角的加号／勾选按钮**加入或取消优先选择；头像和卡片空白不会修改选择。使用右侧上下箭头设置优先级，最多 32 位，排在前面的优先。达到上限后仍可取消已选英雄或查看资料。头像正下方居中的「查看」打开英雄详情浮窗，并立即在唯一的 **haidou.pro** Tab 内加载 `https://haidou.pro/champion/{id}/` 完整网页。查看资料不改变优先顺序；浮窗提供加载提示、刷新网页、启动失败重试、关闭按钮和原生区域的 Escape。点击「浏览器打开」可在默认浏览器查看对应英雄页面。
+4. 顶部「自动接受对局」和整个英雄面板顶部的「自动选取英雄」分别控制两项功能。自动选取是英雄功能区的总开关，关闭时仍可编辑偏好。首次运行两个开关都关闭，后续恢复保存的设置。其下的「总是按照优先顺序选取英雄」复选框默认勾选：持续争取更高优先级的英雄；取消勾选后，本轮自动抢到任意优先英雄并经客户端确认即停止。此策略以 `always_prioritize` 保存，旧设置缺少该字段时默认勾选。启停状态由总开关表示；断线不会改变已保存的开关偏好。
 5. 点击右上方「设置」，在「外观」中选择经典金色、ChatGPT 深色、ChatGPT 浅色、Nord 北欧或 Catppuccin，默认使用经典金色。立即生效，无需重启，选择自动保存到本地设置的 `theme` 字段，下次启动会恢复。设置页也提供重新连接和默认收起的诊断信息；使用「返回」回到英雄选择，搜索与优先顺序会保留。
 
 主界面集中展示英雄库、优先顺序和当前功能状态，选人期间才显示当前英雄与可用池。右上方「日志」提供独立的活动记录页面；资源计数及本次接受/选取次数位于「设置 → 诊断」。需要处理的连接或授权问题、设置或日志保存失败仍直接提示。成功反馈沿用独立提示窗，不在主界面重复展示历史结果。
@@ -43,6 +45,18 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Test
 
 主窗口使用 macOS 风格的自绘标题栏，中间的 Catengar 名称旁显示嵌入 ICO 中的现有猫科 logo，无需额外图片文件：左侧红色按钮收进托盘，黄色按钮最小化，绿色按钮最大化或还原。空白标题栏可拖动、双击最大化/还原；保留系统边缘缩放和任务栏操作，Windows 11 使用系统圆角与阴影。标题栏随当前主题即时变化，三个按钮支持键盘焦点。托盘与任务栏继续使用猫科图标。
 
+## 软件更新
+
+应用启动约 10 秒后自动检查 GitHub 正式版，之后每 6 小时检查一次；已有可用更新或正在处理更新时跳过定时检查。发现新版本后显示不抢焦点的提示窗，顶部提供「发现新版本」入口。也可在「设置 → 软件更新」点击「检查更新」。**只有点击「更新并重启」后才下载、校验并安装更新**；安装完成会重新打开应用，保留偏好、窗口位置、缓存和日志。
+
+匹配、接受对局、选人、游戏开始、对局和重连期间禁止安装；已连接但未知的游戏阶段也会暂停安装。下载完成和退出前再次核对阶段，安装进程还检查实际的 `League of Legends` 进程，避免 LCU 断线时误判空闲。下载期间进入匹配或对局时，更新包保留为就绪状态，结束后再次点击「更新并重启」。
+
+更新只接受 [本项目 GitHub Releases](https://github.com/0xruth1ezz/lcu-catengar/releases) 中已公开发布、版本高于当前版本的正式版，不接受草稿、预发行版或降级。下载前重新核对版本与附件，验证 ZIP 的 GitHub SHA-256 摘要、文件大小、固定文件清单和主程序版本；安装前再次校验暂存文件。缺少完整可校验附件时不会替换程序。尚未包含更新功能的旧版需要先手动下载并安装一次支持更新的构建。
+
+请将整套便携程序放在当前用户可写的目录；更新器不申请 UAC，`Program Files` 等受保护目录不可写时会提示移动程序。更新引擎嵌入主程序，通过 Windows 自带的 Windows PowerShell 5.1 在后台运行，无需 Node 或 Python。引擎、请求及结果记录位于应用实际数据目录的 `updates` 子目录（通常为 `%LOCALAPPDATA%\LoLRengar\updates`）；更新包、暂存文件及 `backup` 位于程序目录下的 `.catengar-update-<随机标识>` 中。
+
+检查、下载或校验失败可按设置中的提示重试。替换或重新启动失败时会尝试恢复原文件并重新打开原版本；若恢复未完成，可从上述更新目录的 `backup` 恢复原文件。已有偏好、缓存和日志不参与替换。
+
 ## 自动化行为
 
 ### 活动日志
@@ -58,6 +72,9 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Test
 - 自动接受：仅在 `ReadyCheck`、`state=InProgress`、自己的 `playerResponse=None` 时提交接受请求。已接受或拒绝的不重复提交。
 - 自动选人：只处理队列 450（ARAM）、2400（Mayhem），或客户端明确返回 `ARAM` / `ARAM_MAYHEM` 的队列。未知模式默认不执行。
 - 优先从可用替补池交换，兼容 `benchChampionIds` 和 `benchChampions` 两种会话结构。只有比当前英雄排名更高的英雄才会被选中；当前英雄没有出现在优先列表时，列表中的任何可用英雄都可成为候选。
+- 勾选「总是按照优先顺序选取英雄」时，已选中英雄或完成选取后仍继续检查更高优先级的替补。例如顺序为 A、B、C，持有 B 时可升级到 A；持有 A 时即使只有 B、C 可用，也保留 A。
+- 取消勾选时，仅在本应用提交的选取经 LCU 确认归属后停止本轮自动选人。手动持有优先英雄、请求返回 HTTP 204、失败或超时都不会单独完成本轮；未确认的请求按原有规则重试。
+- 本次应用运行中，本轮已停止的状态在断线重连、切换主题、修改优先列表或关闭再打开总开关后保留；重新勾选策略可恢复持续优选。确认离开 `ChampSelect`，或观察到有效的正数 64 位 `gameData.gameId` 改变后，下一轮重新开始。该完成状态只保留在内存中。
 - 对提供卡片选择的会话，仅在自己的未完成 `pick` action 正在进行，且目标出现在 LCU `pickable-champion-ids` 中时提交选择。根据 `isLegacyChampSelect` 使用对应接口前缀。
 - 成功请求后等待 WebSocket 会话事件确认英雄归属。3 秒未收到确认时补读一次状态。交换竞争、接口拒绝和短暂错误会退避重试，不假定抢选必定成功。
 - 主要通过 **WSS / WAMP 事件订阅**实时获取游戏阶段、对局信息、接受状态、选人会话及可选英雄 ID。事件到达后唤醒工作线程；正常连接下不高频轮询这些状态。每 15 秒仅补读一次游戏阶段，验证认证与连通性并修复遗漏的阶段事件；REST 还用于首次连接、阶段切换缺失数据补齐、断线恢复、静态资源和 POST/PATCH 写操作。
@@ -66,7 +83,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Test
 
 ## 静态资源
 
-游戏数据均从当前 LCU 获取，没有打包英雄图片、固定英雄名称表或外部 CDN 回退：
+客户端静态资源均从当前 LCU 获取，没有打包英雄图片、固定英雄名称表或外部 CDN 回退。英雄详情单独通过 WebView2 加载 haidou.pro 网页；下表列出客户端静态资源的来源：
 
 | 内容 | LCU 接口 |
 | --- | --- |
@@ -97,7 +114,7 @@ LCU 接口随客户端更新可能变化。当前客户端能否使用卡片选�
 
 主程序 manifest 为 `asInvoker`，认证助手为 `requireAdministrator`。助手路径固定为主程序同目录文件，命令行仅包含随机管道标识和父进程 PID。管道拒绝远程客户端，使用显式 ACL，并在两端核对进程 PID；助手还校验父进程为同目录的 `catengar.exe`，以 identification-only QoS 禁止服务端模拟管理员身份。助手不接收脚本、文件路径或通用管理员命令；PowerShell 与模块解析限定为 Windows 系统路径。
 
-助手不安装服务或计划任务，不保存管理员授权。主程序退出或管道关闭后助手会退出；正在执行的命令行查询有 8 秒超时。此次拆分为以后在用户可写目录更新主程序留下条件，尚未实现自动更新；安装在 Program Files 等受保护目录时，更新仍可能需要管理员权限。
+助手不安装服务或计划任务，不保存管理员授权。主程序退出或管道关闭后助手会退出；正在执行的命令行查询有 8 秒超时。软件更新由普通权限更新器负责，需要程序目录可写，不使用认证助手提权。
 
 token 只在私有子进程管道、本机命名管道及应用内存中使用，不进入日志、设置、图片 URL 或 HTTP 子进程参数。REST 和 WebSocket 均使用 WinHTTP，固定连接 `https://127.0.0.1:<port>` / `wss://127.0.0.1:<port>`，不使用代理、不跟随重定向；仅在这个本地连接上接受 LCU 的自签名证书。WebSocket 单条消息限制 2 MiB，只缓存六个已订阅资源；断线后丢弃旧缓存重新同步。初始 REST 快照不会覆盖更新的事件，阶段退出会清除上局选人数据，事件改变后旧决策不会继续提交。
 
@@ -116,7 +133,9 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Diagnose
 - `src/titlebar.zig`：自绘标题栏和红黄绿窗口按钮。
 - `src/ime.zig`：将画布输入焦点及光标位置同步给 Windows 输入法，定位候选栏并处理失焦清理；`zig build test-ime` 检查焦点与 DPI 坐标。
 - `src/main.zig`：普通权限 UI 状态、消息和图片生命周期。
+- `src/updater.zig` / `src/updater.ps1`：后台更新状态、正式版检查、更新包校验、进程退出握手、文件替换与恢复。`zig build test-core` 包含游戏阶段保护及真实原生工作线程启动 Windows PowerShell 的离线集成测试，验证环境、中文路径和结果读取。
 - `src/champion_grid.zig` / `src/portraits.zig`：网格可视范围、连续滚动和共享头像图集。
+- `src/champion_detail.native` / `src/champion_details.zig`：英雄详情浮窗、唯一的 haidou.pro Tab 与网页状态；打开详情时创建 WebView，禁用原生桥接。
 - `src/portrait_worker.zig` / `src/catalog.zig`：有界后台头像解码队列、目录内容标识和重连缓存复用。
 - `src/toasts.zig` / `src/toast.native`：成功提示去重、排队、定时关闭与自绘提示窗。
 - `src/auth.zig`：认证监视、权限助手启动策略与重连身份管理。
@@ -124,7 +143,8 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Diagnose
 - `src/auth_broker.zig` / `src/auth_protocol.zig`：受限本机命名管道、双向进程身份校验和有界认证消息。
 - `src/lcu.zig`：普通权限 WinHTTP 通信。
 - `src/logic.zig`：可独立测试的模式判断、优先级选择及退避规则。
-- `src/service.zig`：事件驱动自动化、动作确认、自动重连和资源缓存。
+- `src/service.zig`：事件驱动自动化、选取策略与本轮完成状态、动作确认、自动重连和资源缓存。
+- `src/selection_policy_tests.zig`：选取策略、配置兼容、确认与重试、断线保留和新轮次重置测试，随 `zig build test-core` 执行。
 - `src/journal.zig` / `src/journal_tests.zig`：后台持久日志、历史分页、清空屏障和落盘故障测试。
 - `src/pick_audit.zig`：每轮顺位英雄机会、请求及确认结果汇总。
 - `src/events.zig`：WebSocket 接收、WAMP 订阅、事件缓存和快照同步。
@@ -134,6 +154,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Diagnose
 - `src/window_state.zig`：记录真实 Win32 窗口位置和尺寸，仅首次显示前恢复；`zig build test-window` 验证移动、隐藏、最小化与位置恢复。
 - `src/tests.zig`：离线协议与自动化测试。
 - `src/auth_broker_test.zig` / `src/auth_fixture.zig`：`zig build test-auth` 使用假凭据验证管道通信、身份拒绝、token 刷新、断开退出与读取取消；不请求 UAC、不读取真实认证，测试助手不打包。
+- `scripts/test-updater.ps1`：运行 `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/test-updater.ps1`，在临时目录用模拟 release 元数据、ZIP 和测试程序验证版本/摘要/文件清单拒绝、替换、文件占用回滚、确认后等待父进程退出及重新启动。不连接真实 LCU、不修改真实 release 或已安装程序。
 - `scripts/test-transport.py` / `src/transport_test.zig`：本地 TLS/WAMP 故障测试。运行 `python scripts/test-transport.py`，仅需 Python 标准库和已安装的 Zig；模拟拒绝在 REST 连接上升级 WebSocket、空闲连接取消、远端断线、token 更新、端口/PID 更换和重订阅，不读取真实 LCU 认证。`scripts/fixtures/loopback.pem` 是公开的自签名测试证书及测试密钥，仅供这些离线测试使用。
 
 UI 调试可使用 `zig build -Doptimize=ReleaseSafe -Dautomation=true`。Native SDK 会在 `.zig-cache/native-sdk-automation` 输出语义快照，并接受它的文件自动化协议。正常构建未启用该调试通道。
@@ -150,7 +171,7 @@ UI 调试可使用 `zig build -Doptimize=ReleaseSafe -Dautomation=true`。Native
 
 ## GitHub CI
 
-`.github/workflows/build.yml` 在每次 push、pull request 和手动运行时执行 Windows 构建：格式检查 → 离线单元测试、图像缓存失效测试、输入法焦点与 DPI 测试、窗口位置测试、认证助手 IPC 测试及 TLS/WebSocket 故障测试 → ReleaseSafe 编译 → 上传便携程序（保留 14 天）。不需要 League 客户端或任何账号密钥。故障测试使用运行器预装的 Python 标准库，不安装额外依赖；Zig 测试程序复用现有编译缓存。`.gitattributes` 固定文本使用 LF，避免 Windows 检出时的 CRLF 转换导致 `zig fmt --check` 失败。
+`.github/workflows/build.yml` 在每次 push、pull request 和手动运行时执行 Windows 构建：格式检查 → 离线单元测试、更新器集成与事务测试、图像缓存失效测试、输入法焦点与 DPI 测试、窗口位置测试、认证助手 IPC 测试及 TLS/WebSocket 故障测试 → ReleaseSafe 编译 → 上传便携程序（保留 14 天）。不需要 League 客户端或任何账号密钥。更新器测试使用系统 Windows PowerShell；传输故障测试使用运行器预装的 Python 标准库，不安装额外依赖；Zig 测试程序复用现有编译缓存。`.gitattributes` 固定文本使用 LF，避免 Windows 检出时的 CRLF 转换导致 `zig fmt --check` 失败。
 
 缓存分两层：固定版本 Zig/Native SDK 按 bootstrap 脚本内容缓存；Zig 全局编译缓存和项目 `.zig-cache` 按构建配置和源码内容缓存。源码修改时回退到相同构建配置的缓存，复用标准库、C++ 宿主和未变更的编译结果。文档修改可直接命中已有编译缓存；同一分支的新 push 会取消过时任务。Actions 固定到完整 commit SHA。
 
@@ -174,9 +195,9 @@ gh workflow run release.yml -f version=v0.2
 gh workflow run release.yml -f bump=minor
 ```
 
-工作流同步更新 `app.zon` 及两个 Windows `.rc` 文件的版本，将版本提交与 `vX.Y.Z` 标签一起推送到默认分支，然后创建带自动生成更新说明的 **draft release**。格式检查、离线测试与 ReleaseSafe 构建通过后，生成 `catengar-vX.Y.Z-windows-x64.zip` 并上传至该草稿的 release assets。ZIP 根目录包含 `catengar.exe`、`catengar-auth.exe`、`catengar-diagnose.exe` 和 `README.md`；解压后保持三个程序在同一目录。应用显示版本和 EXE 版本资源来自本次升级后的源码。
+工作流同步更新 `app.zon` 及两个 Windows `.rc` 文件的版本，将版本提交与 `vX.Y.Z` 标签一起推送到默认分支，然后创建带自动生成更新说明的 **draft release**。格式检查、离线测试与 ReleaseSafe 构建通过后，生成 `catengar-vX.Y.Z-windows-x64.zip` 并上传至该草稿的 release assets。ZIP 根目录包含 `catengar.exe`、`catengar-auth.exe`、`catengar-diagnose.exe`、`WebView2Loader.dll`、`WebView2-LICENSE.txt` 和 `README.md`；解压后保持这些文件在同一目录。应用显示版本和 EXE 版本资源来自本次升级后的源码。
 
-完成后从运行摘要打开草稿，检查附件与说明，再手动发布。失败时使用该次运行的 **Re-run jobs**：同一运行会复用原标签、提交及草稿，即使默认分支已继续更新也不会再次升级版本；已发布的 release 不会被覆盖。重新点击 **Run workflow** 则表示创建下一版本。构建失败会保留版本提交、标签和草稿，方便重试。
+完成后从运行摘要打开草稿，检查附件与说明，再手动发布。**草稿不会触发应用更新；公开发布正式版及其完整 ZIP 后，应用才会发现它。** release 工作流同样执行原生更新工作线程集成测试和 `scripts/test-updater.ps1` 事务测试。失败时使用该次运行的 **Re-run jobs**：同一运行会复用原标签、提交及草稿，即使默认分支已继续更新也不会再次升级版本；已发布的 release 不会被覆盖。重新点击 **Run workflow** 则表示创建下一版本。构建失败会保留版本提交、标签和草稿，方便重试。
 
 创建草稿后直接使用创建接口返回的 ID 和链接，避免 release 列表尚未更新时误报失败；恢复和上传时按标签直接查询草稿。重跑会构建原标签对应的应用源码，同时保留本次检出的发布脚本，确保打包与上传继续使用后续修复过的发布逻辑。如果已经生成了标签或草稿，应重跑原任务，而不是再次点击 Run workflow 自动升级到另一版本。
 

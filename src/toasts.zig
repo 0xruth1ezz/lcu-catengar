@@ -3,6 +3,7 @@ const t = @import("types.zig");
 
 pub const duration_ms = 4500;
 pub const Message = struct {
+    is_update: bool = false,
     title: t.Text(48) = .{},
     body: t.Text(160) = .{},
 };
@@ -15,6 +16,15 @@ pub const State = struct {
     accepted: usize = 0,
     swapped: usize = 0,
     deadline: u64 = 0,
+
+    pub fn updateAvailable(self: *State, version: []const u8, now: u64) void {
+        var buffer: [160]u8 = undefined;
+        self.push(.{
+            .is_update = true,
+            .title = t.Text(48).init("发现新版本"),
+            .body = t.Text(160).init(std.fmt.bufPrint(&buffer, "v{s} 已发布，可在设置中更新并重启。", .{version}) catch "可在设置中更新并重启。"),
+        }, now);
+    }
 
     pub fn observe(self: *State, snapshot: *const t.Snapshot, now: u64) void {
         if (snapshot.accepted > self.accepted) self.push(.{

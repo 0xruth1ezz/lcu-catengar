@@ -25,6 +25,7 @@ pub const Service = struct {
     pending_pick: i32 = 0,
     pending_until: u64 = 0,
     pending_resynced: bool = false,
+    pick_game_id: i64 = 0,
     pick_audit: @import("pick_audit.zig").Audit = .{},
 
     pub fn init(self: *Service, io: std.Io) !void {
@@ -64,6 +65,7 @@ pub const Service = struct {
         defer self.mutex.unlock();
         if (self.preferences.auto_accept != preferences.auto_accept) self.snapshot.logEvent(.accept, .info, if (preferences.auto_accept) "已开启自动接受对局。" else "已关闭自动接受对局。");
         if (self.preferences.auto_pick != preferences.auto_pick) self.snapshot.logEvent(.pick, .info, if (preferences.auto_pick) "已开启自动选取英雄。" else "已关闭自动选取英雄。");
+        if (self.preferences.always_prioritize != preferences.always_prioritize) self.snapshot.logEvent(.pick, .info, if (preferences.always_prioritize) "选取策略：持续按优先顺序选取英雄。" else "选取策略：本轮自动抢到任意优先英雄后停止。");
         self.preferences = preferences;
         self.prefs_version += 1;
     }
@@ -367,10 +369,20 @@ pub const Service = struct {
             if (stream) |s| s.wait(if (icon_cursor < state.champion_count) 50 else 100) else self.sleep(if (std.mem.eql(u8, phase, "ChampSelect")) 250 else if (std.mem.eql(u8, phase, "ReadyCheck")) 500 else 1000);
         }
     }
+    fn resetPickRound(self: *Service, state: *t.Snapshot, gate: *logic.RetryGate) void {
+        state.pick_completed = false;
+        self.pick_game_id = 0;
+        self.pending_pick = 0;
+        self.pending_until = 0;
+        self.pending_resynced = false;
+        gate.* = .{};
+    }
     pub fn tick(self: *Service, temp: std.mem.Allocator, client: anytype, state: *t.Snapshot, gate: *logic.RetryGate, accept_gate: *logic.RetryGate) !void {
         const phase_response = try lcu.requestAuthenticated(client, temp, "GET", "/lol-gameflow/v1/gameflow-phase", "");
+        if (!phase_response.ok()) return error.PhaseUnavailable;
         const phase_json = try phase_response.json(temp);
         defer phase_json.deinit();
+        if (logic.str(phase_json.value).len == 0) return error.InvalidPhase;
         state.phase.set(logic.str(phase_json.value));
         if (!state.connected) state.logEvent(.connection, .success, "LCU 已连接，自动功能可按开关配置运行。");
         state.connected = true;
@@ -382,8 +394,7 @@ pub const Service = struct {
             state.current = 0;
             state.bench_count = 0;
             state.queue_id = 0;
-            gate.* = .{};
-            self.pending_pick = 0;
+            self.resetPickRound(state, gate);
         }
         if (std.mem.eql(u8, phase, "ReadyCheck")) {
             const p = self.prefs();
@@ -418,6 +429,16 @@ pub const Service = struct {
         defer game.deinit();
         const game_phase = logic.str(logic.get(game.value, "phase"));
         if (game_phase.len > 0 and !std.mem.eql(u8, game_phase, phase)) return;
+        const game_id = logic.get(logic.get(game.value, "gameData"), "gameId");
+        if (game_id == .integer and game_id.integer > 0) {
+            // Reconnection may miss the phase between two champion selections.
+            // Keep a completed round across connection loss, but not a new game.
+            if (self.pick_game_id > 0 and self.pick_game_id != game_id.integer) {
+                self.pick_audit.finish(state, false);
+                self.resetPickRound(state, gate);
+            }
+            self.pick_game_id = game_id.integer;
+        }
         const queue = logic.get(logic.get(game.value, "gameData"), "queue");
         state.queue_id = logic.integer(logic.get(queue, "id"));
         const mode = logic.str(logic.get(queue, "gameMode"));
@@ -433,17 +454,18 @@ pub const Service = struct {
         self.pick_audit.observe(&p, state, &.{});
         if (self.pending_pick != 0) {
             if (state.current == self.pending_pick) {
+                state.pick_completed = true;
                 state.swapped += 1;
                 state.last_pick_name.set(championName(state, self.pending_pick));
                 self.pick_audit.confirmed(self.pending_pick);
-                state.logEvent(.pick, .success, try std.fmt.allocPrint(temp, "已抢到 {s}（{d}）· 客户端已确认归属。", .{ championName(state, self.pending_pick), self.pending_pick }));
+                state.logEvent(.pick, .success, try std.fmt.allocPrint(temp, "已抢到 {s}（{d}）· 客户端已确认归属。{s}", .{ championName(state, self.pending_pick), self.pending_pick, if (p.always_prioritize) "" else "本轮优选已停止。" }));
                 self.pending_pick = 0;
             } else if (win.now() < self.pending_until) return else {
                 state.logEvent(.pick, .warning, try std.fmt.allocPrint(temp, "未确认抢到 {s}（{d}）：等待 3 秒仍未确认归属，将重新检查。", .{ championName(state, self.pending_pick), self.pending_pick }));
                 self.pending_pick = 0;
             }
         }
-        if (!p.auto_pick or p.count == 0) return;
+        if (!p.auto_pick or p.count == 0 or (!p.always_prioritize and state.pick_completed)) return;
         var pickable: [256]i32 = undefined;
         var pickable_count: usize = 0;
         // Only query card picks when our own action is active.
@@ -466,6 +488,7 @@ pub const Service = struct {
         }
         p = self.prefs();
         self.pick_audit.observe(&p, state, pickable[0..pickable_count]);
+        if (!p.always_prioritize and state.pick_completed) return;
         const choice = logic.choose(&p, state.queue_id, mode, session.value, pickable[0..pickable_count]) orelse return;
         if (!gate.allowed(choice.champion, win.now())) return;
         if (!std.meta.eql(self.prefs(), p)) return;

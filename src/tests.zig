@@ -2,6 +2,7 @@ const std = @import("std");
 
 test {
     _ = @import("journal_tests.zig");
+    _ = @import("selection_policy_tests.zig");
 }
 
 test "UAC cancellation stays quiet until the user explicitly retries" {
@@ -73,6 +74,9 @@ const themes = @import("theme.zig");
 const grid = @import("champion_grid.zig");
 const portraits = @import("portraits.zig");
 const toasts = @import("toasts.zig");
+test {
+    _ = @import("updater.zig");
+}
 
 test "catalog identity preserves portraits across reconnects but changes with version order or labels" {
     var champs = [_]t.Champion{
@@ -131,7 +135,7 @@ test "success toasts queue confirmed actions once and dismiss independently" {
 test "continuous champion grid reaches every hero and keeps a stable scroll extent" {
     for ([_]f32{ 880, 1120, 1440, 1920 }) |width| {
         const cols = grid.columns(width);
-        const occupied = @as(f32, @floatFromInt(cols)) * grid.stride - grid.gap;
+        const occupied = @as(f32, @floatFromInt(cols)) * (grid.tile_width + grid.gap) - grid.gap;
         try testing.expect(occupied <= grid.libraryWidth(width));
     }
     try testing.expectEqual(@as(usize, 4), grid.columns(880));

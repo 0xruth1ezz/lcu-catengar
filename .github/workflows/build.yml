@@ -64,6 +64,8 @@ jobs:
 
       - name: Run offline tests
         run: |
+          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/test-updater.ps1
+          if ($LASTEXITCODE) { throw 'Updater tests failed' }
           & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-core --summary all
           if ($LASTEXITCODE) { throw 'Core tests failed' }
           & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-images --summary all
@@ -93,6 +95,8 @@ jobs:
             zig-out/bin/catengar.exe
             zig-out/bin/catengar-auth.exe
             zig-out/bin/catengar-diagnose.exe
+            zig-out/bin/WebView2Loader.dll
+            zig-out/bin/WebView2-LICENSE.txt
             README.md
           if-no-files-found: error
           compression-level: 6

@@ -2,7 +2,9 @@ const std = @import("std");
 const native = @import("native_sdk");
 
 pub fn build(b: *std.Build) void {
-    const app = native.addAppArtifacts(b, b.dependency("native_sdk", .{}), .{ .name = "catengar" });
+    const sdk = b.dependency("native_sdk", .{});
+    const app = native.addAppArtifacts(b, sdk, .{ .name = "catengar" });
+    b.getInstallStep().dependOn(&b.addInstallFile(sdk.path("third_party/webview2/LICENSE.txt"), "bin/WebView2-LICENSE.txt").step);
     const options = b.addOptions();
     const version_text = @import("app.zon").version;
     const version = std.SemanticVersion.parse(version_text) catch @panic("Invalid app.zon version");

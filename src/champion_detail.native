@@ -1,0 +1,23 @@
+<column grow="1" main="center" cross="center" label="英雄详情浮窗">
+  <dialog width="{detailWidth}" height="{detailHeight}" padding="24" background="surface" radius="lg" on-dismiss="close_champion" label="英雄详情">
+    <column grow="1" gap="16">
+      <row cross="center" gap="16">
+        <column grow="1" gap="6"><text size="lg">{detail.name.text}</text><text size="sm" foreground="text_muted">海克斯大乱斗 · 海斗 PRO</text></column>
+        <button variant="ghost" size="icon" icon="x" on-press="close_champion" autofocus="true" label="关闭英雄详情"/>
+      </row>
+      <row cross="center" gap="12">
+        <tabs label="英雄资料来源">
+          <button selected="true" on-press="detail_web_tab">haidou.pro</button>
+        </tabs>
+        <spacer grow="1"/>
+        <button variant="ghost" icon="refresh-cw" on-press="reload_detail_web">刷新网页</button>
+      </row>
+      <separator/>
+      <if test="{detail.web_error}"><column grow="1" main="center" cross="center" gap="12"><text wrap="true">无法启动内嵌网页，请确认已安装 Microsoft Edge WebView2 Runtime。</text><button variant="outline" on-press="reload_detail_web">重试加载网页</button><text size="sm" foreground="text_muted">也可以在浏览器中打开英雄页面。</text></column></if>
+      <else><column grow="1" background="background" main="center" cross="center" gap="12" label="英雄网页区域"><text foreground="text_muted">正在加载 haidou.pro…</text><text size="sm" foreground="text_muted">若长时间未显示，请刷新网页或在浏览器中打开。</text></column></else>
+      <separator/>
+      <row cross="center" gap="12"><text grow="1" size="sm" foreground="text_muted" wrap="true">网页来源 · haidou.pro</text><button variant="ghost" size="sm" icon="external-link" on-press="open_detail_browser">浏览器打开</button></row>
+      <if test="{detail.link_error}"><text size="sm" foreground="warning">无法打开浏览器，请重试。</text></if>
+    </column>
+  </dialog>
+</column>

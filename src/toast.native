@@ -1,7 +1,7 @@
 <column padding="6">
   <column padding="16" gap="9" background="surface" border-color="border" radius="lg" grow="1">
     <row gap="9" cross="center">
-      <icon name="check-circle" width="20" height="20" foreground="success"/>
+      <icon name="{toastIcon}" width="20" height="20" foreground="success"/>
       <text grow="1">{toastTitle}</text>
       <text size="sm" foreground="text_muted">Catengar</text>
       <button variant="ghost" size="icon" icon="x" label="关闭提示" on-press="dismiss_toast"/>

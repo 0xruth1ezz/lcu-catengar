@@ -2,6 +2,7 @@
   <row cross="center" gap="12">
     <row cross="center" gap="8"><text size="lg">Catengar</text><text size="sm" foreground="text_muted" label="应用版本">{versionLabel}</text></row>
     <text grow="1" size="sm" foreground="text_muted">League 助手</text>
+    <if test="{software_update.available and not isSettings}"><button variant="outline" icon="download" on-press="open_update_settings">发现新版本</button></if>
     <if test="{isHome}">
       <button variant="ghost" icon="file-text" on-press="open_logs">日志</button>
       <button variant="ghost" icon="settings" on-press="toggle_settings">设置</button>
@@ -66,7 +67,8 @@
     </column>
   </if>
   <if test="{isSettings}">
-    <column grow="1" gap="20" background="surface" radius="lg" padding="18">
+    <column grow="1" background="surface" radius="lg" padding="18">
+    <scroll grow="1" overscroll="none" label="设置内容"><row><column grow="1" gap="20">
       <text size="lg">设置</text>
       <row cross="center" gap="16">
         <column grow="1" gap="4"><text>外观</text><text size="sm" foreground="text_muted">立即生效，自动保存</text></column>
@@ -84,25 +86,38 @@
         <column grow="1" gap="4"><text>客户端连接</text><text size="sm" foreground="text_muted" wrap="true">{status}</text></column>
         <button variant="outline" icon="refresh-cw" on-press="reconnect">重新连接</button>
       </row>
+      <separator/>
+      <column gap="10" label="软件更新">
+        <row cross="center" gap="12">
+          <column grow="1" gap="4"><text>软件更新</text><text size="sm" foreground="text_muted">当前版本 {versionLabel} · 自动检查正式版</text></column>
+          <button variant="outline" on-press="check_updates" disabled="{software_update.checkDisabled}">检查更新</button>
+          <if test="{software_update.available}"><button variant="primary" icon="download" on-press="install_update" disabled="{not canInstallUpdate}">更新并重启</button></if>
+        </row>
+        <if test="{software_update.available}"><text size="sm">新版本 v{software_update.version.text}</text></if>
+        <if test="{software_update.failed}"><text size="sm" foreground="warning" wrap="true">{software_update.description}</text></if>
+        <else><text size="sm" foreground="text_muted" wrap="true">{software_update.description}</text></else>
+        <if test="{software_update.available and not canInstallUpdate}"><text size="sm" foreground="warning" wrap="true">匹配或对局进行中，请结束后再更新。</text></if>
+        <if test="{software_update.notice.len > 0}"><text size="sm" foreground="text_muted" wrap="true">{software_update.notice.text}</text></if>
+      </column>
+      <separator/>
       <row cross="center" gap="12">
         <column grow="1" gap="4"><text>诊断</text><text size="sm" foreground="text_muted">资源与本次运行信息</text></column>
         <if test="{diagnostics_open}"><button variant="ghost" icon="chevron-up" on-press="toggle_diagnostics">收起诊断</button></if>
         <else><button variant="ghost" icon="chevron-down" on-press="toggle_diagnostics">展开诊断</button></else>
       </row>
       <if test="{diagnostics_open}">
-        <scroll grow="1" label="诊断记录">
           <column gap="12">
             <text size="sm" foreground="text_muted" wrap="true">LCU 资源 · 英雄 {snapshot.champion_count} · 头像 {snapshot.icon_count} · 符文 {snapshot.perk_count} · 符文系 {snapshot.style_count}</text>
             <text size="sm" foreground="text_muted">本次运行 · 已接受 {snapshot.accepted} · 已选取 {snapshot.swapped}</text>
             <button variant="outline" icon="file-text" on-press="open_logs">查看活动日志</button>
           </column>
-        </scroll>
       </if>
       <separator/>
       <row cross="center" gap="16">
         <column grow="1" gap="4"><text>关于 Catengar</text><text size="sm" foreground="text_muted">版本、作者与项目仓库</text></column>
         <button variant="outline" icon="info" on-press="open_about" autofocus="{about_return_focus}" label="关于 Catengar">关于</button>
       </row>
+    </column><spacer width="16"/></row></scroll>
     </column>
   </if>
   <if test="{isHome}">
@@ -115,6 +130,10 @@
         <text grow="1">自动选取英雄</text>
         <switch checked="{preferences.auto_pick}" on-toggle="toggle_pick" label="自动选取英雄开关"/>
       </row>
+      <column gap="6">
+        <checkbox checked="{preferences.always_prioritize}" on-toggle="toggle_always_prioritize" text="总是按照优先顺序选取英雄"/>
+        <text size="sm" foreground="text_muted" wrap="true">{pickPolicyDescription}</text>
+      </column>
       <separator/>
       <row gap="20" grow="1">
       <column grow="3" gap="12">
@@ -125,10 +144,12 @@
             <spacer height="{gridTop}"/>
             <grid columns="{gridColumns}" gap="10" label="英雄卡片">
               <for each="champions" as="c" key="id">
-                <stack height="96" background="surface_subtle" radius="md" label="{c.name}">
-                  <toggle-button height="96" variant="ghost" radius="md" selected="{c.selected}" on-toggle="toggle_priority:{c.id}" disabled="{not c.selected and preferences.count >= 32}" label="{c.action_label}"/>
-                  <column main="center" cross="center"><avatar image="{c.image}" source-x="{c.source_x}" source-y="{c.source_y}" source-width="128" source-height="128" width="80" height="80" radius="md" label="{c.name}"/></column>
-                  <if test="{c.selected}"><row main="end" cross="start" padding="4"><stack width="22" height="22" background="accent" radius="xl" padding="4"><icon name="check" foreground="accent_text" label="已优先选择"/></stack></row></if>
+                <stack height="128" background="surface_subtle" radius="md" label="{c.name}">
+                  <column cross="center" padding="8" gap="4">
+                    <avatar image="{c.image}" source-x="{c.source_x}" source-y="{c.source_y}" source-width="128" source-height="128" width="80" height="80" radius="md" label="{c.name}"/>
+                    <button height="28" width="64" size="sm" variant="ghost" on-press="view_champion:{c.id}" autofocus="{c.return_focus}" label="{c.view_label}">查看</button>
+                  </column>
+                  <row main="end" cross="start" padding="4"><toggle-button width="28" height="28" size="icon" variant="outline" radius="sm" icon="{c.selection_icon}" selected="{c.selected}" on-toggle="toggle_priority:{c.id}" disabled="{not c.selected and preferences.count >= 32}" label="{c.action_label}"/></row>
                 </stack>
               </for>
             </grid>
@@ -140,7 +161,7 @@
       </column>
       <column grow="2" gap="12">
         <row cross="center" gap="8"><text size="lg" grow="1">我的优先顺序</text><text size="sm" foreground="text_muted">{preferences.count} / 32</text></row>
-        <if test="{preferences.count == 0}"><column gap="8" padding="12"><text wrap="true">添加想玩的英雄</text><text size="sm" foreground="text_muted" wrap="true">点击左侧头像加入，再用上下箭头调整顺序。</text></column></if>
+        <if test="{preferences.count == 0}"><column gap="8" padding="12"><text wrap="true">添加想玩的英雄</text><text size="sm" foreground="text_muted" wrap="true">点击卡片右上角加入，再用上下箭头调整顺序。</text></column></if>
         <scroll grow="1" label="优先英雄列表">
           <column gap="8">
             <for each="priorities" as="p" key="id">

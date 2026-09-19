@@ -17,6 +17,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILES = ("app.zon", "assets/catengar.rc", "assets/catengar-auth.rc")
 EXECUTABLES = ("catengar.exe", "catengar-auth.exe", "catengar-diagnose.exe")
+WEBVIEW_FILES = ("WebView2Loader.dll", "WebView2-LICENSE.txt")
 VERSION_PATTERN = re.compile(r'(?m)^(\s*\.version\s*=\s*")([^"\r\n]+)(",?\s*)$')
 
 
@@ -229,6 +230,9 @@ def package(root, version, build_dir, output_dir):
     version = version_text(parse_version(version))
     verify_version(root, version)
     files = [build_dir / name for name in EXECUTABLES] + [root / "README.md"]
+    # Recovery can package older, native-only tags using this newer script.
+    if re.search(r'\.webview_layer\s*=\s*"include"', (root / "app.zon").read_text(encoding="utf-8")):
+        files.extend(build_dir / name for name in WEBVIEW_FILES)
     for path in files:
         if not path.is_file() or path.stat().st_size == 0:
             raise ValueError(f"Required release file is missing or empty: {path}")

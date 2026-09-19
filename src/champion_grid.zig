@@ -1,6 +1,7 @@
 const std = @import("std");
 
-pub const tile_height: f32 = 96;
+pub const tile_width: f32 = 96;
+pub const tile_height: f32 = 128;
 pub const gap: f32 = 10;
 pub const stride: f32 = tile_height + gap;
 
@@ -11,7 +12,7 @@ pub fn libraryWidth(canvas_width: f32) f32 {
 
 pub fn columns(canvas_width: f32) usize {
     const library_width = libraryWidth(canvas_width);
-    return @intFromFloat(std.math.clamp(@floor((library_width + gap) / (tile_height + gap)), 2, 10));
+    return @intFromFloat(std.math.clamp(@floor((library_width + gap) / (tile_width + gap)), 2, 10));
 }
 
 pub const Window = struct {

@@ -7,7 +7,7 @@
     .platforms = .{"windows"},
     .capabilities = .{ "native_views", "gpu_surfaces", "tray" },
     .permissions = .{"filesystem"},
-    .webview_layer = "exclude",
+    .webview_layer = "include",
     .shell = .{ .windows = .{.{
         .label = "main",
         .title = "Catengar",

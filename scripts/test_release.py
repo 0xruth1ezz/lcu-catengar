@@ -51,7 +51,7 @@ class ReleaseFilesFixture(unittest.TestCase):
     def binaries(self):
         directory = self.root / "zig-out/bin"
         directory.mkdir(parents=True)
-        for name in release.EXECUTABLES:
+        for name in (*release.EXECUTABLES, *release.WEBVIEW_FILES):
             (directory / name).write_bytes(b"fixture: " + name.encode())
         (directory / "catengar-auth-fixture.exe").write_bytes(b"must not ship")
         return directory
@@ -80,10 +80,21 @@ class FilesTests(ReleaseFilesFixture):
         archive = release.package(self.root, "v0.1.0", binaries, self.root / "artifacts/release")
         self.assertEqual(archive.name, "catengar-v0.1.0-windows-x64.zip")
         with zipfile.ZipFile(archive) as output:
-            self.assertEqual(set(output.namelist()), {*release.EXECUTABLES, "README.md"})
+            self.assertEqual(set(output.namelist()), {*release.EXECUTABLES, *release.WEBVIEW_FILES, "README.md"})
             self.assertIsNone(output.testzip())
-            for name in release.EXECUTABLES:
+            for name in (*release.EXECUTABLES, *release.WEBVIEW_FILES):
                 self.assertEqual(output.read(name), (binaries / name).read_bytes())
+
+    def test_webview_loader_required_only_for_webview_builds(self):
+        binaries = self.binaries()
+        (binaries / "WebView2Loader.dll").unlink()
+        with self.assertRaisesRegex(ValueError, "WebView2Loader"):
+            release.package(self.root, "0.1.0", binaries, self.root / "artifacts/release")
+        manifest = self.root / "app.zon"
+        manifest.write_text(manifest.read_text().replace('"include"', '"exclude"'))
+        archive = release.package(self.root, "0.1.0", binaries, self.root / "artifacts/release")
+        with zipfile.ZipFile(archive) as output:
+            self.assertNotIn("WebView2Loader.dll", output.namelist())
 
     def test_missing_helper_or_wrong_version_cannot_be_packaged(self):
         binaries = self.binaries()

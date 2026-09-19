@@ -13,6 +13,9 @@ const toasts = @import("toasts.zig");
 const titlebar = @import("titlebar.zig");
 const ui_state = @import("ui_state.zig");
 const journal = @import("journal.zig");
+const details = @import("champion_details.zig");
+const updater = @import("updater.zig");
+const update_timer_key = 73;
 const toast_timer_key = 71;
 const profile_copy_timer_key = 72;
 const profile_image_id = 0x50524f46;
@@ -35,8 +38,10 @@ var portrait_loader: ?*portrait_worker.Worker = null;
 var portrait_channel: native.ChannelHandle = undefined;
 var journal_channel: native.ChannelHandle = undefined;
 var journal_worker: ?*journal.Worker = null;
+var update_worker: ?*updater.Worker = null;
+var update_channel: native.ChannelHandle = undefined;
 
-pub const Row = struct { id: i32, name: []const u8, alias: []const u8, image: u64, source_x: usize = 0, source_y: usize = 0, action_label: []const u8 = "", rank: usize, selected: bool };
+pub const Row = struct { id: i32, name: []const u8, alias: []const u8, image: u64, source_x: usize = 0, source_y: usize = 0, action_label: []const u8 = "", view_label: []const u8 = "", selection_icon: []const u8 = "plus", return_focus: bool = false, rank: usize, selected: bool };
 pub const ThemeRow = struct { id: u8, name: []const u8, selected: bool };
 pub const Model = struct {
     snapshot: t.Snapshot = .{},
@@ -45,6 +50,8 @@ pub const Model = struct {
     about_open: bool = false,
     about_link_failed: bool = false,
     about_return_focus: bool = false,
+    detail: details.State = .{},
+    software_update: updater.State = .{},
     page: enum { home, settings, logs } = .home,
     journal_page: journal.Page = .{},
     log_scroll: f32 = 0,
@@ -79,6 +86,17 @@ pub const Model = struct {
     pub fn toastBody(self: *const Model) []const u8 {
         return self.toasts.messages[0].body.text();
     }
+    pub fn toastIcon(self: *const Model) []const u8 {
+        return if (self.toasts.messages[0].is_update) "download" else "check-circle";
+    }
+    pub fn canInstallUpdate(self: *const Model) bool {
+        return updater.canInstall(&self.snapshot);
+    }
+    pub fn pickPolicyDescription(self: *const Model) []const u8 {
+        if (self.preferences.always_prioritize) return "持续选择可用的最高优先级英雄，保留已持有的更高优先级英雄。";
+        if (self.preferences.auto_pick and self.selecting() and self.snapshot.pick_completed) return "本轮已自动抢到英雄，优选已停止；下一轮重新开始。";
+        return "本轮自动抢到任意优先英雄后停止，下一轮重新开始。";
+    }
     pub fn themeOptions(self: *const Model, arena: std.mem.Allocator) []const ThemeRow {
         const rows = arena.alloc(ThemeRow, themes.presets.len) catch return &.{};
         for (themes.presets, rows) |preset, *row_value| {
@@ -103,6 +121,12 @@ pub const Model = struct {
     }
     pub fn aboutLogo(self: *const Model) u64 {
         return if (self.titlebar_logo_ready) @import("app_icon.zig").titlebar_image_id else 0;
+    }
+    pub fn detailWidth(self: *const Model) f32 {
+        return @min(980, self.canvas_width - 64);
+    }
+    pub fn detailHeight(self: *const Model) f32 {
+        return @min(680, self.canvas_height - 64);
     }
     pub fn isHome(self: *const Model) bool {
         return self.page == .home;
@@ -189,7 +213,7 @@ pub const Model = struct {
         const c = &self.snapshot.champions[i];
         const rank = self.preferences.rank(c.id);
         const selected = rank < t.max_priority;
-        return .{ .id = c.id, .name = c.name.text(), .alias = c.alias.text(), .image = if (self.portraits.ready[i]) portraits.imageId(i) else 0, .source_x = portraits.x(i), .source_y = portraits.y(i), .action_label = std.fmt.allocPrint(arena, "{s} {s}", .{ if (selected) "取消优先选择" else "优先选择", c.name.text() }) catch c.name.text(), .rank = rank + 1, .selected = selected };
+        return .{ .id = c.id, .name = c.name.text(), .alias = c.alias.text(), .image = if (self.portraits.ready[i]) portraits.imageId(i) else 0, .source_x = portraits.x(i), .source_y = portraits.y(i), .action_label = std.fmt.allocPrint(arena, "{s} {s}", .{ if (selected) "取消优先选择" else "优先选择", c.name.text() }) catch c.name.text(), .view_label = std.fmt.allocPrint(arena, "查看 {s}", .{c.name.text()}) catch "查看英雄", .selection_icon = if (selected) "check" else "plus", .return_focus = self.detail.return_focus == c.id, .rank = rank + 1, .selected = selected };
     }
     pub fn champions(self: *const Model, arena: std.mem.Allocator) []const Row {
         const window = self.gridWindow();
@@ -270,6 +294,18 @@ pub const Msg = union(enum) {
     open_about,
     close_about,
     open_repository,
+    check_updates,
+    install_update,
+    open_update_settings,
+    update_timer: native.EffectTimer,
+    update_ready: native.EffectChannelEvent,
+    preview_updates,
+    preview_update_blocked,
+    view_champion: i32,
+    close_champion,
+    detail_web_tab,
+    reload_detail_web,
+    open_detail_browser,
     open_logs,
     go_home,
     latest_logs,
@@ -290,6 +326,7 @@ pub const Msg = union(enum) {
     quit,
     toggle_accept,
     toggle_pick,
+    toggle_always_prioritize,
     reconnect,
     authorize_helper,
     toggle_priority: i32,
@@ -314,6 +351,9 @@ fn notifyPortraits() bool {
 fn notifyJournal() bool {
     return journal_channel.post("logs") != .closed;
 }
+fn notifyUpdate() bool {
+    return update_channel.post("update") != .closed;
+}
 fn frameMsg(model: *const Model, frame: native.platform.GpuFrame) ?Msg {
     if (native_runtime) |runtime| ime.sync(runtime, frame);
     if (model.canvas_width == frame.size.width and model.canvas_height == frame.size.height) return null;
@@ -330,6 +370,7 @@ fn initFx(model: *Model, fx: *Effects) void {
     channel = fx.openChannel(.{ .key = 1, .on_event = Effects.channelMsg(.snapshot), .max_pending = 1 });
     portrait_channel = fx.openChannel(.{ .key = 2, .on_event = Effects.channelMsg(.portraits_ready), .max_pending = 1 });
     journal_channel = fx.openChannel(.{ .key = 3, .on_event = Effects.channelMsg(.journal_changed), .max_pending = 1 });
+    update_channel = fx.openChannel(.{ .key = 4, .on_event = Effects.channelMsg(.update_ready), .max_pending = 1 });
     journal_worker = journal.Worker.create(if (preview_catalog.len > 0) ".zig-cache/catengar-preview" else service.root, notifyJournal) catch null;
     if (journal_worker) |worker| {
         if (preview_catalog.len == 0) service.attachLog(worker.sink());
@@ -343,6 +384,8 @@ fn initFx(model: *Model, fx: *Effects) void {
         loadPortraits(model, fx);
         return;
     }
+    update_worker = updater.Worker.create(service.root, @import("catengar_options").version, notifyUpdate) catch null;
+    fx.startTimer(.{ .key = update_timer_key, .interval_ms = 10000, .mode = .one_shot, .on_fire = Effects.timerMsg(.update_timer) });
     if (channel.live()) service.start(notify) catch {
         model.ui_error.set("后台服务启动失败，请重新打开工具。");
     };
@@ -350,6 +393,98 @@ fn initFx(model: *Model, fx: *Effects) void {
 pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
     var changed = false;
     switch (msg) {
+        .check_updates => checkUpdates(model),
+        .open_update_settings => {
+            model.page = .settings;
+            model.about_open = false;
+            model.theme_picker_open = false;
+        },
+        .update_timer => |timer| {
+            if (timer.outcome != .fired) return;
+            if (!model.software_update.busy() and !model.software_update.available()) checkUpdates(model);
+            fx.startTimer(.{ .key = update_timer_key, .interval_ms = 6 * 60 * 60 * 1000, .mode = .one_shot, .on_fire = Effects.timerMsg(.update_timer) });
+        },
+        .install_update => beginUpdate(model),
+        .update_ready => |event| {
+            if (event.kind != .data) return;
+            if (update_worker) |worker| if (worker.take()) |result| {
+                if (result.status == .armed) {
+                    service.copy(&model.snapshot);
+                    if (updater.canInstall(&model.snapshot)) {
+                        updater.commit(result.ticket.text()) catch {
+                            model.software_update.status = .failed;
+                            model.software_update.message.set("更新未能启动，程序保持运行。请重试。");
+                            return;
+                        };
+                        fx.quitApp();
+                    } else model.software_update.status = .ready;
+                    return;
+                }
+                model.software_update.status = result.status;
+                model.software_update.message = result.message;
+                if (result.version.len > 0) model.software_update.version = result.version;
+                if (result.sha256.len > 0) model.software_update.sha256 = result.sha256;
+                if (result.stage.len > 0) model.software_update.stage = result.stage;
+                if (result.status == .available and !std.mem.eql(u8, result.version.text(), model.software_update.notified_version.text())) {
+                    model.software_update.notified_version = result.version;
+                    model.toasts.updateAvailable(result.version.text(), win.now());
+                    startToastTimer(model, fx);
+                }
+                if (result.status == .ready) beginUpdate(model);
+            };
+        },
+        .preview_updates => {
+            if (preview_catalog.len == 0) return;
+            model.page = .settings;
+            model.software_update.version.set("0.2.0");
+            model.software_update.status = switch (model.software_update.status) {
+                .available => .downloading,
+                .downloading => .ready,
+                .ready => .failed,
+                else => .available,
+            };
+            model.software_update.message.set("更新包校验未通过，原版本未被替换。请点击“检查更新”后重试。");
+            if (model.software_update.status == .available) {
+                model.toasts.updateAvailable("0.2.0", win.now());
+                startToastTimer(model, fx);
+            }
+        },
+        .preview_update_blocked => {
+            if (preview_catalog.len == 0) return;
+            model.software_update.status = .available;
+            model.software_update.version.set("0.2.0");
+            model.snapshot.connected = true;
+            model.snapshot.phase.set("InProgress");
+        },
+        .view_champion => |id| {
+            for (model.snapshot.champions[0..model.snapshot.champion_count]) |*champ| if (champ.id == id) {
+                closeDetailWeb(model);
+                model.detail.begin(id, champ.name.text());
+                showDetailWeb(model);
+                break;
+            };
+        },
+        .close_champion => {
+            closeDetailWeb(model);
+            model.detail.open = false;
+            model.detail.return_focus = model.detail.id;
+        },
+        .detail_web_tab => {
+            showDetailWeb(model);
+        },
+        .reload_detail_web => {
+            closeDetailWeb(model);
+            model.detail.reload +%= 1;
+            showDetailWeb(model);
+        },
+        .open_detail_browser => {
+            model.detail.link_error = false;
+            if (native_runtime) |runtime| {
+                runtime.openExternalUrl(model.detail.url.text()) catch {
+                    model.detail.link_error = true;
+                };
+            } else model.detail.link_error = true;
+        },
         .toggle_theme_picker => model.theme_picker_open = !model.theme_picker_open,
         .close_theme_picker => model.theme_picker_open = false,
         .open_about => {
@@ -484,6 +619,10 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
             model.preferences.auto_pick = !model.preferences.auto_pick;
             changed = true;
         },
+        .toggle_always_prioritize => {
+            model.preferences.always_prioritize = !model.preferences.always_prioritize;
+            changed = true;
+        },
         .toggle_priority => |id| {
             if (model.preferences.rank(id) < t.max_priority) {
                 model.preferences.remove(id);
@@ -505,6 +644,7 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
             changed = true;
         },
         .search => |edit| {
+            model.detail.return_focus = 0;
             model.search.apply(edit);
             model.library_scroll = 0;
         },
@@ -570,22 +710,79 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
     if (changed and preview_catalog.len == 0) service.configure(model.preferences);
     loadPortraits(model, fx);
 }
+fn closeDetailWeb(model: *Model) void {
+    if (model.detail.web_ready) if (native_runtime) |runtime| runtime.closeView(1, "champion-web") catch {};
+    model.detail.web_ready = false;
+    model.detail.web_error = false;
+}
+fn checkUpdates(model: *Model) void {
+    if (model.software_update.busy() or model.software_update.status == .ready) return;
+    model.software_update.message.set("");
+    if (preview_catalog.len > 0) {
+        model.software_update.status = .current;
+        return;
+    }
+    if (update_worker) |worker| {
+        model.software_update.status = .checking;
+        worker.submit(.{ .action = .Check });
+    } else {
+        model.software_update.status = .failed;
+        model.software_update.message.set("更新服务未能启动，请重新打开程序。");
+    }
+}
+fn beginUpdate(model: *Model) void {
+    if (!model.software_update.available() or preview_catalog.len > 0) return;
+    service.copy(&model.snapshot);
+    if (!updater.canInstall(&model.snapshot)) return;
+    if (update_worker) |worker| {
+        const action: updater.Action = if (model.software_update.status == .ready) .Install else .Prepare;
+        model.software_update.status = if (action == .Install) .arming else .downloading;
+        model.software_update.message.set("");
+        worker.submit(.{ .action = action, .version = model.software_update.version, .sha256 = model.software_update.sha256, .stage = model.software_update.stage });
+    }
+}
+fn showDetailWeb(model: *Model) void {
+    const runtime = native_runtime orelse return;
+    model.detail.web_error = false;
+    if (!model.detail.web_ready) {
+        _ = runtime.createView(.{
+            .label = "champion-web",
+            .kind = .webview,
+            .parent = "main-canvas",
+            .frame = native.geometry.RectF.init(0, 0, 1, 1),
+            .url = model.detail.url.text(),
+            .bridge_enabled = false,
+        }) catch {
+            model.detail.web_error = true;
+            return;
+        };
+        model.detail.web_ready = true;
+    }
+}
+fn detailWebPanes(model: *const Model, out: []App.WebViewPane) usize {
+    if (!model.detail.open or !model.detail.web_ready or model.detail.web_error) return 0;
+    out[0] = .{ .label = "champion-web", .anchor = "英雄网页区域", .url = model.detail.url.text(), .reload_token = model.detail.reload };
+    return 1;
+}
 fn observeToasts(model: *Model, fx: *Effects) void {
     const was_empty = model.toasts.count == 0;
     model.toasts.observe(&model.snapshot, win.now());
     if (was_empty and model.toasts.count > 0) {
-        const position = win.toastPosition(380, 116);
-        model.toast_x = position.x;
-        model.toast_y = position.y;
-        fx.startTimer(.{ .key = toast_timer_key, .interval_ms = 150, .mode = .repeating, .on_fire = Effects.timerMsg(.toast_timer) });
+        startToastTimer(model, fx);
     }
+}
+fn startToastTimer(model: *Model, fx: *Effects) void {
+    const position = win.toastPosition(380, 116);
+    model.toast_x = position.x;
+    model.toast_y = position.y;
+    fx.startTimer(.{ .key = toast_timer_key, .interval_ms = 150, .mode = .repeating, .on_fire = Effects.timerMsg(.toast_timer) });
 }
 fn toastWindows(model: *const Model, scratch: *App.WindowsScratch) []const App.WindowDescriptor {
     if (model.toasts.count == 0) return &.{};
     scratch.windows[0] = .{
         .label = "success-toast",
         .canvas_label = "toast-canvas",
-        .title = "Catengar · 操作成功",
+        .title = "Catengar · 通知",
         .width = 380,
         .height = 116,
         .x = model.toast_x,
@@ -732,6 +929,8 @@ fn tokens(model: *const Model) canvas.DesignTokens {
     return theme;
 }
 fn command(name: []const u8) ?Msg {
+    if (preview_catalog.len > 0 and std.mem.eql(u8, name, "catengar.preview-updates")) return .preview_updates;
+    if (preview_catalog.len > 0 and std.mem.eql(u8, name, "catengar.preview-update-blocked")) return .preview_update_blocked;
     if (std.mem.eql(u8, name, "catengar.show")) return .show_window;
     if (std.mem.eql(u8, name, "catengar.quit")) return .quit;
     if (preview_catalog.len > 0 and std.mem.eql(u8, name, "catengar.preview-toasts")) return .preview_toasts;
@@ -771,10 +970,11 @@ fn mainView(ui: *canvas.Ui(Msg), model: *const Model) canvas.Ui(Msg).Node {
         titlebar.build(Msg, ui, model.titlebar_hover, model.titlebar_logo_ready),
         canvas.CompiledMarkupView(Model, Msg, @embedFile("app.native")).build(ui, model),
     });
-    if (model.about_open) content = disableBackground(ui, content);
+    if (model.about_open or model.detail.open) content = disableBackground(ui, content);
     return ui.el(.stack, .{ .grow = 1 }, .{
         content,
         if (model.about_open) canvas.CompiledMarkupView(Model, Msg, @embedFile("about.native")).build(ui, model) else ui.el(.stack, .{}, .{}),
+        if (model.detail.open) canvas.CompiledMarkupView(Model, Msg, @embedFile("champion_detail.native")).build(ui, model) else ui.el(.stack, .{}, .{}),
     });
 }
 // Native's disabled flag is per-widget, not inherited. Keep the backdrop
@@ -836,11 +1036,14 @@ pub fn main(init: std.process.Init) !void {
             .items = &tray_items,
         },
         .view = mainView,
+        .web_panes = detailWebPanes,
     });
     defer app.destroy();
     defer if (portrait_loader) |loader| loader.destroy();
+    defer if (update_worker) |worker| worker.destroy();
     defer app.model.portraits.deinit(std.heap.page_allocator);
     app.model.preferences = service.preferences;
+    if (preview_catalog.len == 0) app.model.software_update.notice = updater.readNotice(init.io, root);
     app.model.has_cjk_font = font_bytes != null;
     service.copy(&app.model.snapshot);
     if (preview_catalog.len > 0) {
@@ -860,7 +1063,7 @@ pub fn main(init: std.process.Init) !void {
         // Honor its filesystem grant for our existing local LCU cache.
         .security = .{
             .permissions = &.{native.security.permission_filesystem},
-            .navigation = .{ .external_links = .{ .action = .open_system_browser, .allowed_urls = &.{app_repository_url} } },
+            .navigation = .{ .allowed_origins = &.{ "zero://app", "zero://inline", "https://haidou.pro" }, .external_links = .{ .action = .open_system_browser, .allowed_urls = &.{ app_repository_url, "https://haidou.pro/champion/*" } } },
         },
         .default_frame = native.geometry.RectF.init(0, 0, 1120, 800),
         .js_window_api = false,

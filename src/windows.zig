@@ -88,7 +88,7 @@ pub fn prepareToastWindow() void {
     // The pinned Native Windows host ignores authored popup x/y at create.
     // Its HWND exists before the first canvas paint, so finish placement
     // here without showing or activating an empty window.
-    const hwnd = c.FindWindowW(std.unicode.utf8ToUtf16LeStringLiteral("NativeSdkWindowsHost"), std.unicode.utf8ToUtf16LeStringLiteral("Catengar · 操作成功")) orelse return;
+    const hwnd = c.FindWindowW(std.unicode.utf8ToUtf16LeStringLiteral("NativeSdkWindowsHost"), std.unicode.utf8ToUtf16LeStringLiteral("Catengar · 通知")) orelse return;
     var process_id: c.DWORD = 0;
     _ = c.GetWindowThreadProcessId(hwnd, &process_id);
     if (process_id != c.GetCurrentProcessId()) return;

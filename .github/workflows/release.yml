@@ -98,6 +98,8 @@ jobs:
 
       - name: Run offline tests
         run: |
+          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/test-updater.ps1
+          if ($LASTEXITCODE) { throw 'Updater tests failed' }
           & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-core test-images test-ime test-window test-auth --summary all
           if ($LASTEXITCODE) { throw 'Offline tests failed' }
           python scripts/test-transport.py
