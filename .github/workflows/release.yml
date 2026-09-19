@@ -132,10 +132,20 @@ jobs:
           python -B scripts/release.py upload --tag $env:RELEASE_TAG --archive $env:RELEASE_ARCHIVE
           if ($LASTEXITCODE) { throw 'Release asset upload failed' }
 
-      - name: Link draft in run summary
+      - name: Publish pre-release
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false --prerelease --latest=false
+          if ($LASTEXITCODE) { throw 'Pre-release publication failed' }
+          "release_url=$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/releases/tag/$env:RELEASE_TAG" >> $env:GITHUB_OUTPUT
+
+      - name: Link release in run summary
         if: ${{ always() && steps.release.outputs.release_url != '' }}
         env:
-          RELEASE_URL: ${{ steps.release.outputs.release_url }}
+          RELEASE_URL: ${{ steps.publish.outputs.release_url || steps.release.outputs.release_url }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
           RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
           RELEASE_STATUS: ${{ job.status }}
@@ -143,12 +153,12 @@ jobs:
           @"
           ## Catengar $env:RELEASE_TAG
 
-          [Open draft release]($env:RELEASE_URL)
+          [Open release]($env:RELEASE_URL)
 
           - Commit: $env:RELEASE_COMMIT
           - Asset: catengar-$env:RELEASE_TAG-windows-x64.zip
-          - Build and upload: $env:RELEASE_STATUS
+          - Build, upload, and publish: $env:RELEASE_STATUS
 
-          Review the ZIP and release notes, then publish the draft manually.
-          If a step failed, rerun this workflow run to reuse its version and draft.
+          Successful runs automatically publish a pre-release after uploading the ZIP.
+          If the release is still a draft, rerun this workflow run to reuse its version and draft.
           "@ >> $env:GITHUB_STEP_SUMMARY

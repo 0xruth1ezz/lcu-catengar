@@ -198,9 +198,9 @@ gh workflow run release.yml -f version=v0.2
 gh workflow run release.yml -f bump=minor
 ```
 
-工作流同步更新 `app.zon` 及两个 Windows `.rc` 文件的版本，将版本提交与 `vX.Y.Z` 标签一起推送到默认分支，然后创建带自动生成更新说明的 **draft release**。格式检查、离线测试与 ReleaseSafe 构建通过后，生成 `catengar-vX.Y.Z-windows-x64.zip` 并上传至该草稿的 release assets。ZIP 根目录包含 `catengar.exe`、`catengar-auth.exe`、`catengar-diagnose.exe`、`WebView2Loader.dll`、`WebView2-LICENSE.txt` 和 `README.md`；解压后保持这些文件在同一目录。应用显示版本和 EXE 版本资源来自本次升级后的源码。
+工作流同步更新 `app.zon` 及两个 Windows `.rc` 文件的版本，将版本提交与 `vX.Y.Z` 标签一起推送到默认分支，然后创建带自动生成更新说明的临时草稿。格式检查、离线测试与 ReleaseSafe 构建通过后，生成 `catengar-vX.Y.Z-windows-x64.zip` 并上传至该草稿的 release assets，上传成功后自动发布为 **pre-release**（`draft=false`、`prerelease=true`，不标记为 Latest）。ZIP 根目录包含 `catengar.exe`、`catengar-auth.exe`、`catengar-diagnose.exe`、`WebView2Loader.dll`、`WebView2-LICENSE.txt` 和 `README.md`；解压后保持这些文件在同一目录。应用显示版本和 EXE 版本资源来自本次升级后的源码。
 
-完成后从运行摘要打开草稿，检查附件与说明，再手动发布。**草稿不会触发应用更新；公开发布正式版及其完整 ZIP 后，应用才会发现它。** release 工作流同样执行原生更新工作线程集成测试和 `scripts/test-updater.ps1` 事务测试。失败时使用该次运行的 **Re-run jobs**：同一运行会复用原标签、提交及草稿，即使默认分支已继续更新也不会再次升级版本；已发布的 release 不会被覆盖。重新点击 **Run workflow** 则表示创建下一版本。构建失败会保留版本提交、标签和草稿，方便重试。
+完成后从运行摘要打开已发布的 pre-release，查看附件与说明，无需手动发布。**草稿和预发行版都不会触发应用更新；公开发布正式版及其完整 ZIP 后，应用才会发现它。** release 工作流同样执行原生更新工作线程集成测试和 `scripts/test-updater.ps1` 事务测试。发布前失败时使用该次运行的 **Re-run jobs**：同一运行会复用原标签、提交及草稿，即使默认分支已继续更新也不会再次升级版本；已发布的 release 不会被覆盖。重新点击 **Run workflow** 则表示创建下一版本。构建失败会保留版本提交、标签和草稿，方便重试。
 
 创建草稿后直接使用创建接口返回的 ID 和链接，避免 release 列表尚未更新时误报失败；恢复和上传时按标签直接查询草稿。重跑会构建原标签对应的应用源码，同时保留本次检出的发布脚本，确保打包与上传继续使用后续修复过的发布逻辑。如果已经生成了标签或草稿，应重跑原任务，而不是再次点击 Run workflow 自动升级到另一版本。
 

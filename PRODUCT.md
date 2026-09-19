@@ -165,8 +165,8 @@ direction was established during initialization.
   periodic stable-release checks, explicit update consent, validation,
   game protection, replacement, recovery, and settings states.
 - `.github/workflows/build.yml`, `.github/workflows/release.yml`,
-  `scripts/test-updater.ps1`: offline updater verification and the existing
-  draft-release workflow, which still requires manual publication.
+  `scripts/test-updater.ps1`: offline updater verification and the release
+  workflow, which automatically publishes a pre-release after uploading the ZIP.
 - `src/types.zig`, `src/logic.zig`, `src/service.zig`, `src/settings.zig`:
   preference limits, continuous and per-round selection rules, client-confirmed
   completion, round detection, automation, and settings compatibility.
