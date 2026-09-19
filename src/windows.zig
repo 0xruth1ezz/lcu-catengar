@@ -115,3 +115,48 @@ pub fn dataDirectory(allocator: std.mem.Allocator) ![]const u8 {
     // Keep the existing data directory across the catengar rename.
     return std.fs.path.join(allocator, &.{ base, "LoLRengar" });
 }
+pub fn shellPath(allocator: std.mem.Allocator, path: []const u8) ![:0]u16 {
+    if (path.len == 0 or std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidShellPath;
+    const input = try std.unicode.utf8ToUtf16LeAllocZ(allocator, path);
+    defer allocator.free(input);
+    for (input) |*unit| if (unit.* == '/') {
+        unit.* = '\\';
+    };
+    var absolute: [32768]u16 = undefined;
+    const length = c.GetFullPathNameW(input.ptr, absolute.len, &absolute, null);
+    if (length == 0 or length >= absolute.len) return error.InvalidShellPath;
+    // A packaged launcher can redirect AppData writes to its LocalCache.
+    // Explorer runs outside that package and cannot see the logical path.
+    // Resolve the actual on-disk target through a handle before crossing into
+    // the Shell process; lexical normalization alone cannot fix redirection.
+    const handle = c.CreateFileW(&absolute, 0, c.FILE_SHARE_READ | c.FILE_SHARE_WRITE | c.FILE_SHARE_DELETE, null, c.OPEN_EXISTING, c.FILE_FLAG_BACKUP_SEMANTICS, null);
+    if (handle == c.INVALID_HANDLE_VALUE) return error.LogPathUnavailable;
+    defer _ = c.CloseHandle(handle);
+    var physical: [32768]u16 = undefined;
+    const physical_length = c.GetFinalPathNameByHandleW(handle, &physical, physical.len, c.FILE_NAME_NORMALIZED | c.VOLUME_NAME_DOS);
+    if (physical_length == 0 or physical_length >= physical.len) return error.InvalidShellPath;
+    const target = physical[0..physical_length];
+    const unc = std.unicode.utf8ToUtf16LeStringLiteral("\\\\?\\UNC\\");
+    if (std.mem.startsWith(u16, target, unc)) {
+        physical[6] = '\\';
+        return allocator.dupeZ(u16, target[6..]);
+    }
+    const extended = std.unicode.utf8ToUtf16LeStringLiteral("\\\\?\\");
+    if (target.len >= 7 and std.mem.startsWith(u16, target, extended) and target[5] == ':') return allocator.dupeZ(u16, target[4..]);
+    return allocator.dupeZ(u16, target);
+}
+
+/// Call from a worker thread. Pass the Shell an actual item identity, rather
+/// than handing a directory string to the association/DDE "open" command.
+/// Selecting activity.jsonl opens its containing directory in Explorer.
+pub fn revealFile(path: []const u8) !void {
+    const wide = try shellPath(std.heap.page_allocator, path);
+    defer std.heap.page_allocator.free(wide);
+    const initialized = c.CoInitializeEx(null, c.COINIT_APARTMENTTHREADED);
+    if (initialized < 0 and initialized != c.RPC_E_CHANGED_MODE) return error.ShellInitialization;
+    defer if (initialized >= 0) c.CoUninitialize();
+    var item: c.PIDLIST_ABSOLUTE = null;
+    if (c.SHParseDisplayName(wide.ptr, null, &item, 0, null) < 0 or item == null) return error.LogPathUnavailable;
+    defer c.CoTaskMemFree(item);
+    if (c.SHOpenFolderAndSelectItems(item, 0, null, 0) < 0) return error.OpenLogDirectory;
+}

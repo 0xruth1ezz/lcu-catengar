@@ -1,94 +1,177 @@
-<column grow="1" background="background" padding="24" gap="18">
+<column grow="1" background="background" padding="24" gap="16">
   <row cross="center" gap="12">
-    <column grow="1" gap="4">
-      <row gap="12" cross="center"><text size="heading">Catengar</text><badge>极地助手</badge></row>
-    </column>
-    <badge>{phaseLabel}</badge>
-    <button variant="outline" icon="refresh-cw" on-press="reconnect">重新连接</button>
-    <if test="{snapshot.auth_retry_available}"><button variant="primary" on-press="authorize_helper">授权认证助手</button></if>
+    <row cross="center" gap="8"><text size="lg">Catengar</text><text size="sm" foreground="text_muted" label="应用版本">{versionLabel}</text></row>
+    <text grow="1" size="sm" foreground="text_muted">League 助手</text>
+    <if test="{isHome}">
+      <button variant="ghost" icon="file-text" on-press="open_logs">日志</button>
+      <button variant="ghost" icon="settings" on-press="toggle_settings">设置</button>
+    </if>
+    <else><button variant="outline" icon="chevron-left" on-press="go_home">返回</button></else>
   </row>
-  <row cross="center" gap="12">
-    <row grow="1" gap="10" cross="center" label="连接状态">
-      <if test="{snapshot.connected}"><icon name="check-circle" foreground="success" width="18" height="18"/></if>
-      <else><icon name="circle-dot" foreground="warning" width="18" height="18"/></else>
-      <text grow="1" wrap="true">{status}</text>
+  <if test="{ui_error.len > 0}"><text foreground="destructive" wrap="true">{ui_error.text}</text></if>
+  <if test="{snapshot.settings_error.len > 0}"><text foreground="warning" wrap="true">{snapshot.settings_error.text}</text></if>
+  <if test="{not isLogs and journal_page.error_message.len > 0}">
+    <row cross="center" gap="12"><text grow="1" foreground="warning" wrap="true">日志保存遇到问题，请查看日志页面。</text><button variant="outline" on-press="open_logs">查看日志</button></row>
+  </if>
+  <if test="{hasConnectionNotice}">
+    <row gap="12" cross="center">
+      <text grow="1" foreground="warning" wrap="true">{connectionNotice}</text>
+      <if test="{canAuthorize}"><button variant="primary" on-press="authorize_helper">授权连接</button></if>
+      <if test="{canReconnect}"><button variant="outline" on-press="reconnect">重新连接</button></if>
     </row>
-    <text size="sm" foreground="text_muted">外观</text>
-    <stack width="200">
-      <select on-press="toggle_theme_picker" label="外观主题">{themeLabel}</select>
-      <if test="{theme_picker_open}">
-        <dropdown-menu anchor="below" anchor-alignment="stretch" on-dismiss="close_theme_picker">
-          <for each="themeOptions" as="style" key="id">
-            <menu-item selected="{style.selected}" on-press="set_theme:{style.id}">{style.name}</menu-item>
-          </for>
-        </dropdown-menu>
+  </if>
+  <if test="{isLogs}">
+    <column grow="1" gap="12" background="surface" radius="lg" padding="18" label="活动日志页面">
+      <row cross="center" gap="12">
+        <text size="lg" grow="1">活动日志</text>
+        <button variant="ghost" icon="folder-open" on-press="open_log_directory">打开日志目录</button>
+        <button variant="outline" icon="trash" on-press="ask_clear_logs" disabled="{journal_page.clearing or journal_page.loading or journal_page.total == 0}">清空所有日志</button>
+      </row>
+      <text size="sm" foreground="text_muted">本地时间 · 新记录在前 · 自动保存在本机</text>
+      <if test="{confirm_clear_logs}">
+        <row gap="12" cross="center" background="surface_subtle" radius="md" padding="12">
+          <text grow="1" wrap="true">清空全部历史日志？此操作无法撤销。</text>
+          <button variant="ghost" on-press="cancel_clear_logs">取消</button>
+          <button variant="outline" on-press="clear_logs" disabled="{journal_page.clearing}">确认清空</button>
+        </row>
       </if>
-    </stack>
-  </row>
-  <row gap="16">
-    <column grow="1" background="surface" radius="lg" padding="18" gap="10">
-      <row cross="center" gap="10"><text grow="1" size="lg">自动接受对局</text><switch checked="{preferences.auto_accept}" on-toggle="toggle_accept" label="自动接受对局开关"/></row>
-      <text foreground="text_muted">匹配成功时自动确认 · 适用于所有队列</text>
-    </column>
-    <column grow="1" background="surface" radius="lg" padding="18" gap="10">
-      <row cross="center" gap="10"><text grow="1" size="lg">优先英雄自动选取</text><switch checked="{preferences.auto_pick}" on-toggle="toggle_pick" label="自动选取英雄开关"/></row>
-      <text foreground="text_muted">ARAM / MAYHEM · 仅换取更高优先级英雄</text>
-    </column>
-  </row>
-  <row gap="24" grow="1" background="surface" radius="lg" padding="18" label="英雄选择">
-    <column grow="1" gap="12">
-      <row cross="center"><text size="lg" grow="1">英雄库</text></row>
-      <search-field text="{query}" on-input="search" placeholder="搜索英雄名称或英文名…" label="搜索英雄"/>
-      <scroll grow="1" value="{library_scroll}" on-scroll="library_scrolled" label="英雄网格" overscroll="none">
-        <column>
-          <spacer height="{gridTop}"/>
-          <grid columns="{gridColumns}" gap="10" label="英雄卡片">
-            <for each="champions" as="c" key="id">
-              <stack height="96" background="surface_subtle" radius="md" label="{c.name}">
-                <toggle-button height="96" variant="ghost" radius="md" selected="{c.selected}" on-toggle="toggle_priority:{c.id}" disabled="{not c.selected and preferences.count >= 32}" label="{c.action_label}"/>
-                <column main="center" cross="center">
-                  <avatar image="{c.image}" source-x="{c.source_x}" source-y="{c.source_y}" source-width="128" source-height="128" width="80" height="80" radius="md" label="{c.name}"/>
-                </column>
-                <if test="{c.selected}">
-                  <row main="end" cross="start" padding="4">
-                    <stack width="22" height="22" background="accent" radius="xl" padding="4"><icon name="check" foreground="accent_text" label="已优先选择"/></stack>
-                  </row>
-                </if>
-              </stack>
-            </for>
-          </grid>
-          <spacer height="{gridBottom}"/>
-          <if test="{not hasChampions}"><column gap="12" padding="18"><icon name="download" width="28" height="28" foreground="text_muted"/><text wrap="true" foreground="text_muted">连接 League 客户端后，英雄名称和头像会自动出现在这里。</text></column></if>
-          <if test="{hasChampions and matchCount == 0}"><text foreground="text_muted">没有找到匹配的英雄</text></if>
-        </column>
-      </scroll>
-      <text foreground="text_muted" size="sm">{libraryLabel}</text>
-    </column>
-    <column width="24" main="center" cross="center"><icon name="arrow-right" width="24" height="24" foreground="text_muted"/></column>
-    <column grow="1" gap="12">
-      <row cross="center"><text size="lg" grow="1">我的优先顺序</text><badge>{preferences.count} / 32</badge></row>
-      <scroll grow="1">
+      <if test="{log_notice.len > 0}"><text size="sm" foreground="text_muted" wrap="true">{log_notice.text}</text></if>
+      <if test="{journal_page.directory_error.len > 0}"><text size="sm" foreground="warning" wrap="true">{journal_page.directory_error.text}</text></if>
+      <if test="{journal_page.error_message.len > 0}">
+        <row cross="center" gap="12"><text grow="1" foreground="warning" wrap="true">{journal_page.error_message.text}</text><button variant="outline" on-press="latest_logs">刷新</button></row>
+      </if>
+      <separator/>
+      <scroll grow="1" value="{log_scroll}" on-scroll="logs_scrolled" label="活动日志列表" overscroll="none">
         <column gap="8">
-          <for each="priorities" as="p" key="id">
-            <row cross="center" gap="10" background="surface_subtle" radius="md" padding="8">
-              <text foreground="accent">{pad(p.rank, 2)}</text><avatar image="{p.image}" source-x="{p.source_x}" source-y="{p.source_y}" source-width="128" source-height="128" width="32" height="32">{p.alias}</avatar>
-              <text grow="1">{p.name}</text>
-              <button icon="arrow-up" size="icon" variant="ghost" label="提高优先级" on-press="move_up:{p.id}" disabled="{p.rank == 1}"/>
-              <button icon="arrow-down" size="icon" variant="ghost" label="降低优先级" on-press="move_down:{p.id}" disabled="{p.rank == preferences.count}"/>
-              <button icon="x" size="icon" variant="ghost" label="移除英雄" on-press="remove:{p.id}"/>
-            </row>
+          <if test="{journal_page.clearing}"><text foreground="text_muted">正在清空历史日志…</text></if>
+          <if test="{journal_page.count == 0 and not journal_page.loading and not journal_page.clearing}"><column padding="18" gap="8"><text>暂无日志</text><text size="sm" foreground="text_muted" wrap="true">连接变化、自动接受和选取结果会记录在这里。</text></column></if>
+          <for each="logRows" as="entry">
+            <column gap="8">
+              <row gap="12" padding="6">
+                <column width="170" gap="4"><text size="sm" foreground="text_muted">{entry.timestamp.text}</text><text size="sm" foreground="text_muted">{entry.kindLabel} · {entry.levelLabel}</text></column>
+                <if test="{entry.failed}"><text grow="1" size="sm" foreground="destructive" wrap="true">{entry.message.text}</text></if>
+                <else><text grow="1" size="sm" wrap="true">{entry.message.text}</text></else>
+              </row>
+              <separator/>
+            </column>
           </for>
         </column>
       </scroll>
-      <column background="surface_subtle" radius="md" padding="12" gap="6">
-        <row><text grow="1" foreground="text_muted">{queueLabel}</text><text foreground="accent">{currentLabel}</text></row>
-        <text foreground="text_muted" size="sm">可用池 {snapshot.bench_count} 位</text>
-      </column>
+      <row cross="center" gap="8">
+        <text grow="1" size="sm" foreground="text_muted">{logPageLabel}</text>
+        <button variant="ghost" on-press="latest_logs" disabled="{journal_page.loading or journal_page.clearing}">最新</button>
+        <button variant="outline" icon="chevron-left" on-press="newer_logs" disabled="{not canNewerLogs}">较新</button>
+        <button variant="outline" icon="chevron-right" on-press="older_logs" disabled="{not canOlderLogs}">较早</button>
+      </row>
     </column>
-  </row>
-  <column gap="5">
-    <for each="logs" as="entry"><text size="sm" foreground="text_muted">{entry.text}</text></for>
-  </column>
-  <separator/>
-  <row cross="center" gap="14"><text size="sm" foreground="text_muted" grow="1">LCU 资源 · 英雄 {snapshot.champion_count} · 头像 {snapshot.icon_count} · 符文 {snapshot.perk_count} · 符文系 {snapshot.style_count}</text><text size="sm" foreground="text_muted">已接受 {snapshot.accepted} · 已选取 {snapshot.swapped}</text></row>
+  </if>
+  <if test="{isSettings}">
+    <column grow="1" gap="20" background="surface" radius="lg" padding="18">
+      <text size="lg">设置</text>
+      <row cross="center" gap="16">
+        <column grow="1" gap="4"><text>外观</text><text size="sm" foreground="text_muted">立即生效，自动保存</text></column>
+        <stack width="200">
+          <select on-press="toggle_theme_picker" label="外观主题">{themeLabel}</select>
+          <if test="{theme_picker_open}">
+            <dropdown-menu anchor="below" anchor-alignment="stretch" on-dismiss="close_theme_picker">
+              <for each="themeOptions" as="style" key="id"><menu-item selected="{style.selected}" on-press="set_theme:{style.id}">{style.name}</menu-item></for>
+            </dropdown-menu>
+          </if>
+        </stack>
+      </row>
+      <separator/>
+      <row cross="center" gap="16">
+        <column grow="1" gap="4"><text>客户端连接</text><text size="sm" foreground="text_muted" wrap="true">{status}</text></column>
+        <button variant="outline" icon="refresh-cw" on-press="reconnect">重新连接</button>
+      </row>
+      <row cross="center" gap="12">
+        <column grow="1" gap="4"><text>诊断</text><text size="sm" foreground="text_muted">资源与本次运行信息</text></column>
+        <if test="{diagnostics_open}"><button variant="ghost" icon="chevron-up" on-press="toggle_diagnostics">收起诊断</button></if>
+        <else><button variant="ghost" icon="chevron-down" on-press="toggle_diagnostics">展开诊断</button></else>
+      </row>
+      <if test="{diagnostics_open}">
+        <scroll grow="1" label="诊断记录">
+          <column gap="12">
+            <text size="sm" foreground="text_muted" wrap="true">LCU 资源 · 英雄 {snapshot.champion_count} · 头像 {snapshot.icon_count} · 符文 {snapshot.perk_count} · 符文系 {snapshot.style_count}</text>
+            <text size="sm" foreground="text_muted">本次运行 · 已接受 {snapshot.accepted} · 已选取 {snapshot.swapped}</text>
+            <button variant="outline" icon="file-text" on-press="open_logs">查看活动日志</button>
+          </column>
+        </scroll>
+      </if>
+    </column>
+  </if>
+  <if test="{isHome}">
+    <row cross="center" gap="16" background="surface" radius="lg" padding="16">
+      <column grow="1" gap="4"><text>自动接受对局</text><text size="sm" foreground="text_muted">{acceptStatus}</text></column>
+      <switch checked="{preferences.auto_accept}" on-toggle="toggle_accept" label="自动接受对局开关"/>
+    </row>
+    <column gap="16" grow="1" background="surface" radius="lg" padding="18" label="英雄选择">
+      <row cross="center" gap="16" label="自动选取总开关">
+        <column grow="1" gap="4"><text>自动选取英雄</text><if test="{preferences.auto_pick}"><text size="sm" foreground="text_muted" wrap="true">{pickStatus}</text></if></column>
+        <switch checked="{preferences.auto_pick}" on-toggle="toggle_pick" label="自动选取英雄开关"/>
+      </row>
+      <separator/>
+      <row gap="20" grow="1">
+      <column grow="3" gap="12">
+        <row cross="center" gap="8"><text size="lg" grow="1">英雄库</text><text size="sm" foreground="text_muted">{libraryLabel}</text></row>
+        <search-field text="{query}" on-input="search" placeholder="搜索英雄名称或英文名…" label="搜索英雄"/>
+        <scroll grow="1" value="{library_scroll}" on-scroll="library_scrolled" label="英雄网格" overscroll="none">
+          <column>
+            <spacer height="{gridTop}"/>
+            <grid columns="{gridColumns}" gap="10" label="英雄卡片">
+              <for each="champions" as="c" key="id">
+                <stack height="96" background="surface_subtle" radius="md" label="{c.name}">
+                  <toggle-button height="96" variant="ghost" radius="md" selected="{c.selected}" on-toggle="toggle_priority:{c.id}" disabled="{not c.selected and preferences.count >= 32}" label="{c.action_label}"/>
+                  <column main="center" cross="center"><avatar image="{c.image}" source-x="{c.source_x}" source-y="{c.source_y}" source-width="128" source-height="128" width="80" height="80" radius="md" label="{c.name}"/></column>
+                  <if test="{c.selected}"><row main="end" cross="start" padding="4"><stack width="22" height="22" background="accent" radius="xl" padding="4"><icon name="check" foreground="accent_text" label="已优先选择"/></stack></row></if>
+                </stack>
+              </for>
+            </grid>
+            <spacer height="{gridBottom}"/>
+            <if test="{not hasChampions}"><column gap="12" padding="18"><icon name="download" width="28" height="28" foreground="text_muted"/><text wrap="true" foreground="text_muted">连接客户端后，英雄会出现在这里。已有的优先顺序会保留。</text></column></if>
+            <if test="{hasChampions and matchCount == 0}"><text foreground="text_muted" wrap="true">没有找到匹配的英雄，试试其他名称或清空搜索。</text></if>
+          </column>
+        </scroll>
+      </column>
+      <column grow="2" gap="12">
+        <row cross="center" gap="8"><text size="lg" grow="1">我的优先顺序</text><text size="sm" foreground="text_muted">{preferences.count} / 32</text></row>
+        <if test="{preferences.count == 0}"><column gap="8" padding="12"><text wrap="true">添加想玩的英雄</text><text size="sm" foreground="text_muted" wrap="true">点击左侧头像加入，再用上下箭头调整顺序。</text></column></if>
+        <scroll grow="1" label="优先英雄列表">
+          <column gap="8">
+            <for each="priorities" as="p" key="id">
+              <row cross="center" gap="6" background="surface_subtle" radius="md" padding="8" label="{p.name}">
+                <text size="sm" foreground="accent">{pad(p.rank, 2)}</text><avatar image="{p.image}" source-x="{p.source_x}" source-y="{p.source_y}" source-width="128" source-height="128" width="28" height="28">{p.alias}</avatar>
+                <text grow="1">{p.name}</text>
+                <button icon="arrow-up" size="icon" variant="ghost" label="提高优先级" on-press="move_up:{p.id}" disabled="{p.rank == 1}"/>
+                <button icon="arrow-down" size="icon" variant="ghost" label="降低优先级" on-press="move_down:{p.id}" disabled="{p.rank == preferences.count}"/>
+                <button icon="x" size="icon" variant="ghost" label="移除英雄" on-press="remove:{p.id}"/>
+              </row>
+            </for>
+          </column>
+        </scroll>
+        <if test="{selecting}"><column gap="6"><separator/><text size="sm" foreground="text_muted">当前英雄 · {queueLabel}</text><text>{currentLabel}</text><text size="sm" foreground="text_muted">可用池 {snapshot.bench_count} 位</text></column></if>
+      </column>
+      </row>
+    </column>
+  </if>
+  <if test="{hasProfile}">
+    <row main="end" cross="center" gap="10" label="当前账号">
+      <avatar image="{profileImage}" width="40" height="40" label="召唤师头像">{profileName}</avatar>
+      <column width="280" gap="2">
+        <text wrap="true">{profileName}</text>
+        <text size="sm" foreground="text_muted" wrap="true">{profileId}</text>
+        <text size="sm" foreground="text_muted">{phaseLabel}</text>
+      </column>
+      <column gap="4" width="112">
+        <button icon="{profileCopyIcon}" variant="ghost" label="{profileCopyAccessibleLabel}" on-press="copy_profile" disabled="{snapshot.profile.riot_id.len == 0}">{profileCopyLabel}</button>
+        <if test="{profileCopyFailed}"><text size="sm" foreground="destructive" wrap="true">剪贴板忙，请重试</text></if>
+      </column>
+    </row>
+  </if>
+  <else>
+    <row main="end" cross="center" height="54" label="当前状态">
+      <if test="{snapshot.connected}"><text size="sm" foreground="text_muted">{phaseLabel}</text></if>
+      <else><text size="sm" foreground="text_muted">{connectionLabel}</text></else>
+    </row>
+  </else>
 </column>

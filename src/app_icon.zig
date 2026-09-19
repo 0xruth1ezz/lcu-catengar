@@ -2,6 +2,23 @@ const std = @import("std");
 const win = @import("windows.zig");
 const c = win.c;
 
+pub const titlebar_image_id = 0x4c4f474f;
+/// Reuse the existing ICO's high-DPI PNG frame, so branding stays embedded
+/// in the portable executable without a second asset or runtime file read.
+pub const titlebar_png = blk: {
+    const bytes = @embedFile("catengar_icon");
+    const count = std.mem.readInt(u16, bytes[4..6], .little);
+    for (0..count) |index| {
+        const entry = bytes[6 + index * 16 ..][0..16];
+        if (entry[0] == 64 and entry[1] == 64) {
+            const length = std.mem.readInt(u32, entry[8..12], .little);
+            const offset = std.mem.readInt(u32, entry[12..16], .little);
+            break :blk bytes[offset..][0..length];
+        }
+    }
+    @compileError("Application icon needs a 64 px PNG frame for the titlebar");
+};
+
 /// Native's Windows tray loader needs an ICO file. Keep the portable executable
 /// self-contained and materialize its embedded icon in our existing data folder.
 pub fn prepare(allocator: std.mem.Allocator, io: std.Io, root: []const u8) ![]const u8 {

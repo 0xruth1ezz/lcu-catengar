@@ -4,6 +4,13 @@ const native = @import("native_sdk");
 pub fn build(b: *std.Build) void {
     const app = native.addAppArtifacts(b, b.dependency("native_sdk", .{}), .{ .name = "catengar" });
     const options = b.addOptions();
+    const version_text = @import("app.zon").version;
+    const version = std.SemanticVersion.parse(version_text) catch @panic("Invalid app.zon version");
+    const version_label = if (version.patch == 0 and version.pre == null and version.build == null)
+        b.fmt("v{d}.{d}", .{ version.major, version.minor })
+    else
+        b.fmt("v{s}", .{version_text});
+    options.addOption([]const u8, "version_label", version_label);
     options.addOption([]const u8, "preview_catalog", b.option([]const u8, "preview-catalog", "Read-only UI preview using a local catalog fixture (no LCU connection or settings writes)") orelse "");
     app.exe.root_module.addOptions("catengar_options", options);
     app.exe.root_module.linkSystemLibrary("winhttp", .{});
@@ -47,6 +54,8 @@ pub fn build(b: *std.Build) void {
     }) });
     core_tests.root_module.linkSystemLibrary("advapi32", .{});
     core_tests.root_module.linkSystemLibrary("winhttp", .{});
+    core_tests.root_module.linkSystemLibrary("shell32", .{});
+    core_tests.root_module.linkSystemLibrary("ole32", .{});
     b.step("test-core", "Test LCU parsing, selection and automation without a client").dependOn(&b.addRunArtifact(core_tests).step);
     const image_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/native_image_test.zig"),

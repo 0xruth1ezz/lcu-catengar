@@ -11,11 +11,12 @@ pub const paths = [_][]const u8{
     "/lol-matchmaking/v1/ready-check",
     "/lol-champ-select/v1/session",
     "/lol-champ-select/v1/pickable-champion-ids",
+    @import("profile.zig").endpoint,
 };
-pub const Slot = enum(usize) { phase, game, ready, selection, pickable };
+pub const Slot = enum(usize) { phase, game, ready, selection, pickable, summoner };
 const Entry = struct { body: ?[]u8 = null, status: u32 = 404, revision: u64 = 0 };
 
-/// Only the five subscribed resources are retained. Each replacement owns its
+/// Only the subscribed resources are retained. Each replacement owns its
 /// bytes, so receiver frames cannot outlive or alias the cache accidentally.
 pub const Cache = struct {
     mutex: win.Mutex = .{},

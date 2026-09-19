@@ -17,7 +17,7 @@ pub fn main(init: std.process.Init) !void {
     const stream = try @import("events.zig").Stream.create(&client);
     defer stream.destroy();
     try stream.cache.sync(a, &client, false);
-    std.debug.print("WebSocket: upgraded and subscribed to 5 LCU resources\n", .{});
+    std.debug.print("WebSocket: upgraded and subscribed to {d} LCU resources\n", .{@import("events.zig").paths.len});
     for ([_][]const u8{ "/lol-gameflow/v1/gameflow-phase", "/lol-game-data/assets/v1/champion-summary.json", "/lol-perks/v1/perks", "/lol-perks/v1/styles" }) |endpoint| {
         const response = try client.request(a, "GET", endpoint, "");
         std.debug.print("{s}: HTTP {d}, {d} bytes\n", .{ endpoint, response.status, response.body.len });

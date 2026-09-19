@@ -11,7 +11,12 @@ const portrait_worker = @import("portrait_worker.zig");
 const preview_catalog = @import("catengar_options").preview_catalog;
 const toasts = @import("toasts.zig");
 const titlebar = @import("titlebar.zig");
+const ui_state = @import("ui_state.zig");
+const journal = @import("journal.zig");
 const toast_timer_key = 71;
+const profile_copy_timer_key = 72;
+const profile_image_id = 0x50524f46;
+const profile_job_index = t.max_champions;
 pub const panic = std.debug.FullPanic(native.debug.capturePanic);
 const canvas = native.canvas;
 const App = native.UiApp(Model, Msg);
@@ -25,6 +30,8 @@ var ime: @import("ime.zig").Bridge = .{};
 var window_state: @import("window_state.zig").State = undefined;
 var portrait_loader: ?*portrait_worker.Worker = null;
 var portrait_channel: native.ChannelHandle = undefined;
+var journal_channel: native.ChannelHandle = undefined;
+var journal_worker: ?*journal.Worker = null;
 
 pub const Row = struct { id: i32, name: []const u8, alias: []const u8, image: u64, source_x: usize = 0, source_y: usize = 0, action_label: []const u8 = "", rank: usize, selected: bool };
 pub const ThemeRow = struct { id: u8, name: []const u8, selected: bool };
@@ -32,16 +39,30 @@ pub const Model = struct {
     snapshot: t.Snapshot = .{},
     preferences: t.Preferences = .{},
     theme_picker_open: bool = false,
+    page: enum { home, settings, logs } = .home,
+    journal_page: journal.Page = .{},
+    log_scroll: f32 = 0,
+    confirm_clear_logs: bool = false,
+    log_notice: t.Text(128) = .{},
+    diagnostics_open: bool = false,
     titlebar_hover: bool = false,
+    titlebar_logo_ready: bool = false,
     has_cjk_font: bool = false,
     search: canvas.TextBuffer(128) = .{},
     library_scroll: f32 = 0,
-    library_height: f32 = 300,
+    library_height: f32 = 800 - titlebar.height - 1,
     canvas_width: f32 = 1120,
     canvas_height: f32 = 800,
     portraits: portraits.Store = .{},
     image_pending: [t.max_champions]bool = @splat(false),
     image_failed: [t.max_champions]bool = @splat(false),
+    profile_image_path: t.Text(768) = .{},
+    profile_image_generation: u64 = 0,
+    profile_image_pending: bool = false,
+    profile_image_ready: bool = false,
+    profile_image_failed: bool = false,
+    profile_copy_id: t.Text(128) = .{},
+    profile_copy: enum { idle, copied, failed } = .idle,
     ui_error: t.Text(160) = .{},
     toasts: toasts.State = .{},
     toast_x: f32 = 0,
@@ -61,6 +82,61 @@ pub const Model = struct {
     }
     pub fn themeLabel(self: *const Model) []const u8 {
         return self.preferences.theme.label();
+    }
+    pub fn versionLabel(_: *const Model) []const u8 {
+        return @import("catengar_options").version_label;
+    }
+    pub fn isHome(self: *const Model) bool {
+        return self.page == .home;
+    }
+    pub fn isSettings(self: *const Model) bool {
+        return self.page == .settings;
+    }
+    pub fn isLogs(self: *const Model) bool {
+        return self.page == .logs;
+    }
+    pub fn logRows(self: *const Model) []const t.LogEntry {
+        return self.journal_page.entries[0..self.journal_page.count];
+    }
+    pub fn logPageLabel(self: *const Model, allocator: std.mem.Allocator) []const u8 {
+        const p = &self.journal_page;
+        if (p.loading) return "正在读取日志…";
+        if (p.total == 0) return "共 0 条记录";
+        return std.fmt.allocPrint(allocator, "第 {d}–{d} 条 / 共 {d} 条", .{ p.total - p.end + 1, p.total - p.start, p.total }) catch "";
+    }
+    pub fn canOlderLogs(self: *const Model) bool {
+        return self.journal_page.start > 0 and !self.journal_page.loading and !self.journal_page.clearing;
+    }
+    pub fn canNewerLogs(self: *const Model) bool {
+        return !self.journal_page.live and !self.journal_page.loading and !self.journal_page.clearing;
+    }
+    pub fn hasProfile(self: *const Model) bool {
+        return @import("profile.zig").visible(&self.snapshot);
+    }
+    pub fn profileName(self: *const Model) []const u8 {
+        return self.snapshot.profile.name.text();
+    }
+    pub fn profileId(self: *const Model) []const u8 {
+        return if (self.snapshot.profile.riot_id.len > 0) self.snapshot.profile.riot_id.text() else "好友 ID 暂不可用";
+    }
+    pub fn profileImage(self: *const Model) u64 {
+        return if (self.profile_image_ready) profile_image_id else 0;
+    }
+    pub fn profileCopyLabel(self: *const Model) []const u8 {
+        return switch (self.profile_copy) {
+            .idle => "复制 ID",
+            .copied => "已复制",
+            .failed => "重试复制",
+        };
+    }
+    pub fn profileCopyIcon(self: *const Model) []const u8 {
+        return if (self.profile_copy == .copied) "check" else "copy";
+    }
+    pub fn profileCopyAccessibleLabel(self: *const Model) []const u8 {
+        return if (self.profile_copy == .copied) "已复制完整好友 ID" else "复制完整好友 ID";
+    }
+    pub fn profileCopyFailed(self: *const Model) bool {
+        return self.profile_copy == .failed;
     }
     pub fn query(self: *const Model) []const u8 {
         return self.search.text();
@@ -127,11 +203,32 @@ pub const Model = struct {
         if (self.ui_error.len > 0) return self.ui_error.text();
         return self.snapshot.status.text();
     }
+    pub fn connectionLabel(self: *const Model) []const u8 {
+        return ui_state.connectionLabel(&self.snapshot);
+    }
+    pub fn connectionNotice(self: *const Model) []const u8 {
+        return ui_state.connectionNotice(&self.snapshot);
+    }
+    pub fn hasConnectionNotice(self: *const Model) bool {
+        return self.connectionNotice().len > 0;
+    }
+    pub fn canAuthorize(self: *const Model) bool {
+        return self.snapshot.auth_retry_available and self.snapshot.connection != .helper_missing;
+    }
+    pub fn canReconnect(self: *const Model) bool {
+        return !self.snapshot.connected and self.snapshot.connection != .authorizing and !self.canAuthorize();
+    }
+    pub fn acceptStatus(self: *const Model) []const u8 {
+        return ui_state.acceptLabel(&self.preferences, &self.snapshot);
+    }
+    pub fn pickStatus(self: *const Model) []const u8 {
+        return ui_state.pickLabel(&self.preferences, &self.snapshot);
+    }
+    pub fn selecting(self: *const Model) bool {
+        return self.snapshot.connected and std.mem.eql(u8, self.snapshot.phase.text(), "ChampSelect") and self.snapshot.pick_supported == true;
+    }
     pub fn phaseLabel(self: *const Model) []const u8 {
-        const phase = self.snapshot.phase.text();
-        const pairs = .{ .{ "None", "客户端空闲" }, .{ "Lobby", "房间内" }, .{ "Matchmaking", "寻找对局" }, .{ "ReadyCheck", "等待接受" }, .{ "ChampSelect", "英雄选择" }, .{ "InProgress", "对局中" }, .{ "GameStart", "开始对局" }, .{ "EndOfGame", "对局结束" } };
-        inline for (pairs) |pair| if (std.mem.eql(u8, phase, pair[0])) return pair[1];
-        return phase;
+        return ui_state.phaseLabel(&self.snapshot);
     }
     pub fn queueLabel(self: *const Model) []const u8 {
         return switch (self.snapshot.queue_id) {
@@ -146,9 +243,6 @@ pub const Model = struct {
         for (self.snapshot.champions[0..self.snapshot.champion_count]) |*c| if (c.id == self.snapshot.current) return c.name.text();
         return "客户端已分配英雄";
     }
-    pub fn logs(self: *const Model) []const t.Text(192) {
-        return self.snapshot.logs[0..@min(self.snapshot.log_count, 3)];
-    }
     pub fn libraryLabel(self: *const Model, a: std.mem.Allocator) []const u8 {
         const count = self.matchCount();
         if (std.mem.trim(u8, self.query(), " \r\n\t").len > 0) return std.fmt.allocPrint(a, "找到 {d} / {d} 位英雄", .{ count, self.snapshot.champion_count }) catch "";
@@ -159,6 +253,20 @@ pub const Msg = union(enum) {
     set_theme: u8,
     toggle_theme_picker,
     close_theme_picker,
+    toggle_settings,
+    toggle_diagnostics,
+    open_logs,
+    go_home,
+    latest_logs,
+    older_logs,
+    newer_logs,
+    logs_scrolled: canvas.ScrollState,
+    ask_clear_logs,
+    cancel_clear_logs,
+    clear_logs,
+    open_log_directory,
+    journal_changed: native.EffectChannelEvent,
+    preview_logs,
     show_window,
     hide_window,
     minimize_window,
@@ -179,11 +287,17 @@ pub const Msg = union(enum) {
     toast_timer: native.EffectTimer,
     dismiss_toast,
     preview_toasts,
+    preview_connection,
+    copy_profile,
+    profile_copy_timer: native.EffectTimer,
     snapshot: native.EffectChannelEvent,
     portraits_ready: native.EffectChannelEvent,
 };
 fn notifyPortraits() bool {
     return portrait_channel.post("ready") != .closed;
+}
+fn notifyJournal() bool {
+    return journal_channel.post("logs") != .closed;
 }
 fn frameMsg(model: *const Model, frame: native.platform.GpuFrame) ?Msg {
     if (native_runtime) |runtime| ime.sync(runtime, frame);
@@ -194,8 +308,20 @@ fn notify() bool {
     return channel.post("state") != .closed;
 }
 fn initFx(model: *Model, fx: *Effects) void {
+    const icon = @import("app_icon.zig");
+    if (fx.registerImageBytes(icon.titlebar_image_id, icon.titlebar_png)) |_| {
+        model.titlebar_logo_ready = true;
+    } else |_| {}
     channel = fx.openChannel(.{ .key = 1, .on_event = Effects.channelMsg(.snapshot), .max_pending = 1 });
     portrait_channel = fx.openChannel(.{ .key = 2, .on_event = Effects.channelMsg(.portraits_ready), .max_pending = 1 });
+    journal_channel = fx.openChannel(.{ .key = 3, .on_event = Effects.channelMsg(.journal_changed), .max_pending = 1 });
+    journal_worker = journal.Worker.create(if (preview_catalog.len > 0) ".zig-cache/catengar-preview" else service.root, notifyJournal) catch null;
+    if (journal_worker) |worker| {
+        if (preview_catalog.len == 0) service.attachLog(worker.sink());
+    } else {
+        model.journal_page.error_message.set("日志服务未能启动，请重新打开应用。");
+        model.journal_page.loading = false;
+    }
     portrait_loader = portrait_worker.Worker.create(notifyPortraits) catch null;
     instance.watch(notify) catch {};
     if (preview_catalog.len > 0) {
@@ -211,6 +337,90 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
     switch (msg) {
         .toggle_theme_picker => model.theme_picker_open = !model.theme_picker_open,
         .close_theme_picker => model.theme_picker_open = false,
+        .toggle_settings => {
+            model.page = if (model.page == .settings) .home else .settings;
+            model.theme_picker_open = false;
+            model.confirm_clear_logs = false;
+        },
+        .toggle_diagnostics => model.diagnostics_open = !model.diagnostics_open,
+        .go_home => {
+            model.page = .home;
+            model.theme_picker_open = false;
+            model.confirm_clear_logs = false;
+        },
+        .open_logs => {
+            model.page = .logs;
+            model.theme_picker_open = false;
+            model.confirm_clear_logs = false;
+            model.log_scroll = 0;
+            if (journal_worker) |worker| worker.request(null);
+        },
+        .logs_scrolled => |scroll| model.log_scroll = scroll.offset_y,
+        .latest_logs, .older_logs, .newer_logs => {
+            const worker = journal_worker orelse return;
+            const p = &model.journal_page;
+            const before: ?usize = switch (msg) {
+                .older_logs => if (model.canOlderLogs()) p.start else return,
+                .newer_logs => if (model.canNewerLogs()) (if (p.end + journal.page_size >= p.total) null else p.end + journal.page_size) else return,
+                else => null,
+            };
+            model.log_scroll = 0;
+            model.confirm_clear_logs = false;
+            worker.request(before);
+            model.journal_page.loading = true;
+        },
+        .ask_clear_logs => model.confirm_clear_logs = true,
+        .cancel_clear_logs => model.confirm_clear_logs = false,
+        .clear_logs => {
+            if (!model.confirm_clear_logs or model.journal_page.clearing) return;
+            model.confirm_clear_logs = false;
+            model.log_notice.set("");
+            if (journal_worker) |worker| {
+                worker.clear();
+                model.journal_page.clearing = true;
+            }
+        },
+        .open_log_directory => if (journal_worker) |worker| {
+            worker.openDirectory();
+        },
+        .journal_changed => |event| {
+            if (event.kind != .data) return;
+            if (journal_worker) |worker| {
+                const old_clear = model.journal_page.clear_revision;
+                worker.read(&model.journal_page);
+                if (model.journal_page.clear_revision != old_clear) {
+                    model.log_scroll = 0;
+                    model.log_notice.set("历史日志已清空，新事件会继续记录。");
+                }
+            }
+        },
+        .preview_logs => if (preview_catalog.len > 0) {
+            if (journal_worker) |worker| for (0..65) |i| {
+                var buffer: [512]u8 = undefined;
+                const message = std.fmt.bufPrint(&buffer, "预览记录 {d:0>3} · 顺位英雄测试：已提交选取请求；只有客户端确认归属后才记录成功。", .{i}) catch unreachable;
+                const sink = worker.sink();
+                sink.emit(sink.context, t.LogEntry.init(.pick, if (i % 3 == 0) .success else if (i % 3 == 1) .failure else .info, message));
+            };
+        },
+        .copy_profile => {
+            if (!model.hasProfile() or model.snapshot.profile.riot_id.len == 0) return;
+            fx.cancelTimer(profile_copy_timer_key);
+            model.profile_copy = .failed;
+            if (native_runtime) |runtime| {
+                // The typed data API reports a locked clipboard; the SDK's
+                // legacy text-only effect currently swallows that failure.
+                if (runtime.writeClipboardData(.{ .mime_type = "text/plain", .bytes = model.snapshot.profile.riot_id.text() })) |_| {
+                    model.profile_copy = .copied;
+                    fx.startTimer(.{ .key = profile_copy_timer_key, .interval_ms = 2500, .on_fire = Effects.timerMsg(.profile_copy_timer) });
+                } else |_| {}
+            }
+        },
+        .profile_copy_timer => |timer| {
+            if (timer.outcome == .fired) model.profile_copy = .idle;
+        },
+        .preview_connection => if (preview_catalog.len > 0) {
+            model.snapshot.connected = !model.snapshot.connected;
+        },
         .set_theme => |id| {
             const preset = std.enums.fromInt(themes.Preset, id) orelse return;
             model.theme_picker_open = false;
@@ -271,7 +481,8 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
         .resized => |size| {
             model.canvas_width = size.width;
             model.canvas_height = size.height;
-            model.library_height = @max(grid.stride, size.height - 418 - titlebar.height - 1);
+            // Overestimate until the scroll widget reports its actual viewport.
+            model.library_height = @max(grid.stride, size.height - titlebar.height - 1);
         },
         .toast_timer => |timer| {
             if (timer.outcome == .fired) model.toasts.expire(win.now()) else model.toasts.count = 0;
@@ -307,6 +518,8 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
             service.mutex.unlock();
             if (old_generation != model.snapshot.catalog_generation) {
                 if (portrait_loader) |loader| loader.cancelQueued();
+                model.profile_image_pending = false;
+                model.profile_image_generation +%= 1;
                 for (0..portraits.atlas_count) |i| _ = fx.unregisterImage(portraits.imageId(i * portraits.per_atlas));
                 model.portraits.deinit(std.heap.page_allocator);
                 model.image_pending = @splat(false);
@@ -363,6 +576,17 @@ fn flushPortraits(model: *Model, fx: *Effects) void {
     var added: [t.max_champions]bool = @splat(false);
     while (loader.take()) |result| {
         defer result.deinit();
+        if (result.index == profile_job_index) {
+            if (result.generation != model.profile_image_generation or !model.hasProfile()) continue;
+            model.profile_image_pending = false;
+            model.profile_image_failed = true;
+            if (result.pixels) |pixels| {
+                fx.registerImage(profile_image_id, portraits.tile, portraits.tile, pixels) catch continue;
+                model.profile_image_ready = true;
+                model.profile_image_failed = false;
+            }
+            continue;
+        }
         if (result.generation != model.snapshot.catalog_generation or result.index >= model.snapshot.champion_count) continue;
         const index = result.index;
         model.image_pending[index] = false;
@@ -381,20 +605,39 @@ fn flushPortraits(model: *Model, fx: *Effects) void {
         fx.registerImage(portraits.imageId(slot * portraits.per_atlas), portraits.side, portraits.side, model.portraits.pixels[slot]) catch {
             for (0..portraits.per_atlas) |j| {
                 const index = slot * portraits.per_atlas + j;
+                if (index >= t.max_champions) break;
                 if (added[index]) model.image_failed[index] = true;
             }
             continue;
         };
         for (0..portraits.per_atlas) |j| {
             const index = slot * portraits.per_atlas + j;
+            if (index >= t.max_champions) break;
             if (added[index]) model.portraits.ready[index] = true;
         }
     };
 }
 fn loadPortraits(model: *Model, fx: *Effects) void {
-    _ = fx;
+    const path = if (model.hasProfile()) model.snapshot.profile.icon_path.text() else "";
+    const id = if (model.hasProfile()) model.snapshot.profile.riot_id.text() else "";
+    if (!std.mem.eql(u8, model.profile_copy_id.text(), id)) {
+        model.profile_copy_id.set(id);
+        model.profile_copy = .idle;
+        fx.cancelTimer(profile_copy_timer_key);
+    }
+    if (!std.mem.eql(u8, model.profile_image_path.text(), path)) {
+        _ = fx.unregisterImage(profile_image_id);
+        model.profile_image_path.set(path);
+        model.profile_image_generation +%= 1;
+        model.profile_image_pending = false;
+        model.profile_image_ready = false;
+        model.profile_image_failed = false;
+    }
     const loader = portrait_loader orelse return;
-    var pending: usize = 0;
+    if (path.len > 0 and !model.profile_image_ready and !model.profile_image_pending and !model.profile_image_failed) {
+        model.profile_image_pending = loader.submit(.{ .generation = model.profile_image_generation, .index = profile_job_index, .path = model.profile_image_path });
+    }
+    var pending: usize = if (model.profile_image_pending) 1 else 0;
     for (model.image_pending) |p| if (p) {
         pending += 1;
     };
@@ -458,6 +701,8 @@ fn command(name: []const u8) ?Msg {
     if (std.mem.eql(u8, name, "catengar.show")) return .show_window;
     if (std.mem.eql(u8, name, "catengar.quit")) return .quit;
     if (preview_catalog.len > 0 and std.mem.eql(u8, name, "catengar.preview-toasts")) return .preview_toasts;
+    if (preview_catalog.len > 0 and std.mem.eql(u8, name, "catengar.preview-connection")) return .preview_connection;
+    if (preview_catalog.len > 0 and std.mem.eql(u8, name, "catengar.preview-logs")) return .preview_logs;
     return null;
 }
 const tray_items = [_]native.TrayMenuItem{
@@ -489,7 +734,7 @@ fn startNative(context: *anyopaque, runtime: *native.Runtime) !void {
 }
 fn mainView(ui: *canvas.Ui(Msg), model: *const Model) canvas.Ui(Msg).Node {
     return ui.column(.{ .grow = 1, .style_tokens = .{ .background = .background } }, .{
-        titlebar.build(Msg, ui, model.titlebar_hover),
+        titlebar.build(Msg, ui, model.titlebar_hover, model.titlebar_logo_ready),
         canvas.CompiledMarkupView(Model, Msg, @embedFile("app.native")).build(ui, model),
     });
 }
@@ -507,7 +752,10 @@ pub fn main(init: std.process.Init) !void {
     service.* = .{};
     defer std.heap.page_allocator.destroy(service);
     try service.init(init.io);
-    defer service.deinit();
+    defer {
+        service.deinit();
+        if (journal_worker) |worker| worker.destroy();
+    }
     const icon_path = try @import("app_icon.zig").prepare(std.heap.page_allocator, init.io, root);
     defer std.heap.page_allocator.free(icon_path);
     const font_bytes = @import("font.zig").load(std.heap.page_allocator, init.io) catch null;
@@ -529,7 +777,7 @@ pub fn main(init: std.process.Init) !void {
         .status_item = .{
             .title = "C",
             .icon_path = icon_path,
-            .tooltip = "Catengar · 极地助手",
+            .tooltip = "Catengar · League 助手",
             .activation_command = "catengar.show",
             .items = &tray_items,
         },

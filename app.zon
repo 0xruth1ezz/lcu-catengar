@@ -3,6 +3,7 @@
     .name = "catengar",
     .display_name = "Catengar",
     .version = "0.1.0",
+    .images = .{ .max_image_pixel_bytes = 1638400 },
     .platforms = .{"windows"},
     .capabilities = .{ "native_views", "gpu_surfaces", "tray" },
     .permissions = .{"filesystem"},

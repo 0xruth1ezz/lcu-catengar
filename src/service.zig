@@ -6,6 +6,7 @@ const lcu = @import("lcu.zig");
 const settings = @import("settings.zig");
 const win = @import("windows.zig");
 const events = @import("events.zig");
+const profile = @import("profile.zig");
 const a = std.heap.page_allocator;
 
 pub const Service = struct {
@@ -24,6 +25,7 @@ pub const Service = struct {
     pending_pick: i32 = 0,
     pending_until: u64 = 0,
     pending_resynced: bool = false,
+    pick_audit: @import("pick_audit.zig").Audit = .{},
 
     pub fn init(self: *Service, io: std.Io) !void {
         self.root = try win.dataDirectory(a);
@@ -33,6 +35,7 @@ pub const Service = struct {
             defer a.free(bytes);
             self.preferences = settings.decode(a, bytes) catch {
                 self.config_valid = false;
+                self.snapshot.settings_error.set("设置无法读取，自动功能已关闭。请重新设置偏好，修改后会尝试保存。");
                 self.snapshot.log("设置文件无法读取，已使用关闭状态；修改设置后会保存新的配置。");
                 return;
             };
@@ -41,6 +44,7 @@ pub const Service = struct {
                 try settings.save(a, io, self.config_path, &self.preferences);
             } else {
                 self.config_valid = false;
+                self.snapshot.settings_error.set("设置读取失败，自动功能已关闭。请检查本地目录权限后重新设置偏好。");
                 self.snapshot.log("设置文件读取失败，当前使用默认设置。");
             }
         }
@@ -58,8 +62,19 @@ pub const Service = struct {
     pub fn configure(self: *Service, preferences: t.Preferences) void {
         self.mutex.lock();
         defer self.mutex.unlock();
+        if (self.preferences.auto_accept != preferences.auto_accept) self.snapshot.logEvent(.accept, .info, if (preferences.auto_accept) "已开启自动接受对局。" else "已关闭自动接受对局。");
+        if (self.preferences.auto_pick != preferences.auto_pick) self.snapshot.logEvent(.pick, .info, if (preferences.auto_pick) "已开启自动选取英雄。" else "已关闭自动选取英雄。");
         self.preferences = preferences;
         self.prefs_version += 1;
+    }
+    pub fn attachLog(self: *Service, sink: t.LogSink) void {
+        self.snapshot.log_sink = sink;
+        var i = self.snapshot.log_count;
+        while (i > 0) {
+            i -= 1;
+            sink.emit(sink.context, self.snapshot.logs[i]);
+        }
+        self.snapshot.logEvent(.app, .info, "Catengar 已启动，开始记录本机 LCU 活动。");
     }
     pub fn copy(self: *Service, target: *t.Snapshot) void {
         self.mutex.lock();
@@ -92,13 +107,20 @@ pub const Service = struct {
         self.mutex.unlock();
         if (seen.* == version) return;
         settings.save(a, io, self.config_path, &p) catch {
+            state.settings_error.set("设置尚未保存，将自动重试。请检查本地目录权限，退出前请确认此提示已消失。");
             state.log("设置保存失败，请检查本地目录权限。");
             return;
         };
         seen.* = version;
+        state.settings_error.set("");
     }
     fn disconnect(self: *Service, state: *t.Snapshot, client: *?lcu.Client, stream: *?*events.Stream) void {
+        if (state.connected) state.logEvent(.connection, .warning, "LCU 已断开，自动功能暂停；正在恢复连接。");
+        self.pick_audit.finish(state, true);
         state.connected = false;
+        state.profile = .{};
+        state.connection = .reconnecting;
+        state.pick_supported = null;
         state.websocket = false;
         state.current = 0;
         state.bench_count = 0;
@@ -122,7 +144,13 @@ pub const Service = struct {
         const state = a.create(t.Snapshot) catch return;
         defer a.destroy(state);
         self.copy(state);
+        defer {
+            self.pick_audit.finish(state, true);
+            if (state.connected) state.logEvent(.connection, .info, "应用退出，已结束与 LCU 的连接。");
+            state.logEvent(.app, .info, "Catengar 已退出，后台自动功能已停止。");
+        }
         const watcher = auth.Watcher.create() catch {
+            state.connection = .failed;
             state.status.set("无法启动 LCU 认证监视，请重新打开应用");
             _ = self.publish(state);
             return;
@@ -145,6 +173,9 @@ pub const Service = struct {
         var cache: t.Text(768) = .{};
         var connection_nonce: u64 = 0;
         var next_metadata: u64 = 0;
+        var next_profile: u64 = 0;
+        var profile_revision: ?u64 = null;
+        var next_profile_icon: u64 = 0;
         while (!self.stop.load(.acquire)) {
             self.persist(io, &seen_version, state);
             if (self.auth_retry.swap(false, .acq_rel)) watcher.requestHelper();
@@ -166,10 +197,22 @@ pub const Service = struct {
                     recovery.failed(identity, win.now());
                     watcher.refresh();
                 }
-                state.log("LCU 已断开或认证已更新，正在自动恢复连接。");
+                state.logEvent(.connection, .info, if (manual) "已请求重新连接 LCU。" else if (expired) "LCU 认证已失效，正在重新获取认证。" else "LCU 连接或认证已变化，正在重新验证。");
             }
             if (client == null) {
                 state.connected = false;
+                state.pick_supported = null;
+                const previous_connection = state.connection;
+                state.connection = switch (identity.status) {
+                    .starting => .connecting,
+                    .ready => .reconnecting,
+                    .not_running => .waiting_client,
+                    .admin_required, .failed => .failed,
+                    .authorizing => .authorizing,
+                    .permission_required => .permission_required,
+                    .helper_missing => .helper_missing,
+                    .helper_failed => .helper_failed,
+                };
                 state.websocket = false;
                 state.current = 0;
                 state.bench_count = 0;
@@ -182,19 +225,22 @@ pub const Service = struct {
                         .not_running => "等待 League 客户端启动",
                         .admin_required => "认证助手暂时无法读取客户端，正在重试",
                         .authorizing => "等待授权认证助手",
-                        .permission_required => "认证助手未获授权，可点击「授权认证助手」重试",
+                        .permission_required => "认证助手未获授权，可点击「授权连接」重试",
                         .helper_missing => "缺少 catengar-auth.exe，请将它放在主程序旁",
-                        .helper_failed => "认证助手已停止，可点击「授权认证助手」重试",
+                        .helper_failed => "认证助手已停止，可点击「授权连接」重试",
                         .failed => "认证读取暂时失败，正在自动重试",
                     });
+                    if (previous_connection != state.connection) state.logEvent(.connection, .info, state.status.text());
                     if (!self.publish(state)) break;
                     self.sleep(100);
                     continue;
                 }
                 client = lcu.Client.init(identity.credentials) catch {
+                    state.connection = .failed;
                     recovery.failed(identity, win.now());
                     watcher.refresh();
                     state.status.set("无法连接 LCU，正在重试");
+                    state.logEvent(.connection, .failure, "无法建立 LCU 连接，将自动重试。");
                     if (!self.publish(state)) break;
                     continue;
                 };
@@ -203,6 +249,9 @@ pub const Service = struct {
                 icon_cursor = 0;
                 connection_nonce = win.now();
                 next_metadata = 0;
+                next_profile = 0;
+                profile_revision = null;
+                next_profile_icon = 0;
                 // Keep the displayed catalog and decoded portraits across a
                 // reconnect. Metadata replaces them only if its content changes.
                 cache.set("");
@@ -211,7 +260,7 @@ pub const Service = struct {
                 self.pending_pick = 0;
                 next_ws = 0;
                 next_health = win.now() + 15000;
-                state.log("已取得 LCU 认证，正在连接本机客户端。");
+                state.logEvent(.connection, .info, "已取得 LCU 认证，正在连接本机客户端。");
             }
             var arena: std.heap.ArenaAllocator = .init(a);
             defer arena.deinit();
@@ -232,10 +281,10 @@ pub const Service = struct {
                 next_ws = win.now() + 10000;
                 if (stream) |s| {
                     phase_version = s.cache.phaseVersion();
-                    state.log("WebSocket 已连接，实时监听对局和可用英雄。");
+                    state.logEvent(.connection, .success, "WebSocket 已连接，实时监听对局和可用英雄。");
                 } else {
                     var message: [192]u8 = undefined;
-                    state.log(std.fmt.bufPrint(&message, "WebSocket 暂不可用（{s}），10 秒后重试。", .{@errorName(ws_error orelse error.WebSocketDisconnected)}) catch "WebSocket 暂不可用，正在重试。");
+                    state.logEvent(.connection, .warning, std.fmt.bufPrint(&message, "WebSocket 暂不可用（{s}），暂用 REST；10 秒后重试。", .{@errorName(ws_error orelse error.WebSocketDisconnected)}) catch "WebSocket 暂不可用，正在重试。");
                 }
             }
             state.websocket = stream != null;
@@ -251,7 +300,6 @@ pub const Service = struct {
                 if (version != phase_version) {
                     gate = .{};
                     accept_gate = .{};
-                    self.pending_pick = 0;
                     // A phase boundary may precede a resource's first event.
                     // Fill missing resources once, never poll them in the hot path.
                     s.cache.sync(temp, &client.?, true) catch |err| break :blk err;
@@ -265,7 +313,8 @@ pub const Service = struct {
                 var cached: events.CachedClient = .{ .rest = &client.?, .cache = &s.cache };
                 break :blk self.tick(temp, &cached, state, &gate, &accept_gate);
             } else self.tick(temp, &client.?, state, &gate, &accept_gate);
-            tick_result catch {
+            tick_result catch |err| {
+                state.logEvent(.connection, .failure, std.fmt.allocPrint(temp, "LCU 通信中断（{s}），准备重连。", .{@errorName(err)}) catch "LCU 通信中断，准备重连。");
                 self.disconnect(state, &client, &stream);
                 recovery.failed(identity, win.now());
                 watcher.refresh();
@@ -274,6 +323,26 @@ pub const Service = struct {
             // Automation always runs before optional asset work. Asset work pauses
             // entirely in ready-check/champion-select so it cannot delay a pick.
             const phase = state.phase.text();
+            // Account events stay live during selection without extra REST calls.
+            // The REST fallback refreshes infrequently, after automation executes.
+            if (stream) |s| {
+                const revision = s.cache.version(@intFromEnum(events.Slot.summoner));
+                if (profile_revision != revision) {
+                    var cached: events.CachedClient = .{ .rest = &client.?, .cache = &s.cache };
+                    profile.refresh(temp, &cached, &state.profile) catch {};
+                    profile_revision = revision;
+                    next_profile_icon = 0;
+                }
+            } else if (win.now() >= next_profile) {
+                profile.refresh(temp, &client.?, &state.profile) catch {};
+                next_profile = win.now() + (if (state.profile.name.len > 0) @as(u64, 30000) else 5000);
+            }
+            if (client.?.auth_expired) continue;
+            if (!std.mem.eql(u8, phase, "ChampSelect") and !std.mem.eql(u8, phase, "ReadyCheck") and win.now() >= next_profile_icon) {
+                profile.cacheIcon(temp, io, &client.?, self.root, &state.profile) catch {};
+                next_profile_icon = win.now() + 5000;
+                if (client.?.auth_expired) continue;
+            }
             if (!std.mem.eql(u8, phase, "ChampSelect") and !std.mem.eql(u8, phase, "ReadyCheck") and win.now() >= next_metadata) {
                 if (metadata_stage < 5) {
                     metadata(temp, io, &client.?, self.root, state, metadata_stage, connection_nonce, &cache) catch {
@@ -303,10 +372,13 @@ pub const Service = struct {
         const phase_json = try phase_response.json(temp);
         defer phase_json.deinit();
         state.phase.set(logic.str(phase_json.value));
+        if (!state.connected) state.logEvent(.connection, .success, "LCU 已连接，自动功能可按开关配置运行。");
         state.connected = true;
         state.status.set(if (state.websocket) "已连接 · WebSocket 实时监听" else "已连接 · REST 降级，正在恢复 WebSocket");
         const phase = state.phase.text();
         if (!std.mem.eql(u8, phase, "ChampSelect")) {
+            self.pick_audit.finish(state, false);
+            state.pick_supported = null;
             state.current = 0;
             state.bench_count = 0;
             state.queue_id = 0;
@@ -323,18 +395,22 @@ pub const Service = struct {
             if (logic.shouldAccept(p.auto_accept, phase, ready.value) and accept_gate.allowed(1, win.now())) {
                 // Recheck the switch immediately before the write; no queued writes survive OFF.
                 if (!self.prefs().auto_accept) return;
-                const accepted = try lcu.requestAuthenticated(client, temp, "POST", "/lol-matchmaking/v1/ready-check/accept", "");
+                const accepted = lcu.requestAuthenticated(client, temp, "POST", "/lol-matchmaking/v1/ready-check/accept", "") catch |err| {
+                    state.logEvent(.accept, .failure, "自动接受请求中断，结果未确认。");
+                    return err;
+                };
                 accept_gate.record(win.now(), accepted.ok());
                 if (accepted.ok()) {
                     // Wait for the ReadyCheck phase to end before another accept,
                     // even if the next read briefly repeats playerResponse=None.
                     accept_gate.next_ms = std.math.maxInt(u64);
                     state.accepted += 1;
-                    state.log("已接受对局，等待其他玩家确认。");
-                } else state.log("接受对局暂未成功，将根据客户端状态重试。");
+                    state.logEvent(.accept, .success, "已自动接受对局，等待其他玩家确认。");
+                } else state.logEvent(.accept, .failure, try std.fmt.allocPrint(temp, "自动接受失败（HTTP {d}），将根据匹配状态重试。", .{accepted.status}));
             }
         } else accept_gate.* = .{};
         if (!std.mem.eql(u8, phase, "ChampSelect")) return;
+        state.pick_supported = null;
         // Read queue metadata fresh; never carry an ARAM queue into a different lobby.
         const game_response = try lcu.requestAuthenticated(client, temp, "GET", "/lol-gameflow/v1/session", "");
         if (!game_response.ok()) return;
@@ -345,22 +421,28 @@ pub const Service = struct {
         const queue = logic.get(logic.get(game.value, "gameData"), "queue");
         state.queue_id = logic.integer(logic.get(queue, "id"));
         const mode = logic.str(logic.get(queue, "gameMode"));
-        if (!logic.isAram(state.queue_id, mode)) return;
+        state.pick_supported = logic.isAram(state.queue_id, mode);
+        if (!state.pick_supported.?) return;
         const response = try lcu.requestAuthenticated(client, temp, "GET", "/lol-champ-select/v1/session", "");
         if (!response.ok()) return;
         const session = try response.json(temp);
         defer session.deinit();
         state.current = logic.ownChampion(session.value);
         state.bench_count = logic.benchIds(session.value, &state.bench);
+        var p = self.prefs();
+        self.pick_audit.observe(&p, state, &.{});
         if (self.pending_pick != 0) {
             if (state.current == self.pending_pick) {
                 state.swapped += 1;
                 state.last_pick_name.set(championName(state, self.pending_pick));
-                state.log(try std.fmt.allocPrint(temp, "已选择 {s} · 客户端已确认", .{championName(state, self.pending_pick)}));
+                self.pick_audit.confirmed(self.pending_pick);
+                state.logEvent(.pick, .success, try std.fmt.allocPrint(temp, "已抢到 {s}（{d}）· 客户端已确认归属。", .{ championName(state, self.pending_pick), self.pending_pick }));
                 self.pending_pick = 0;
-            } else if (win.now() < self.pending_until) return else self.pending_pick = 0;
+            } else if (win.now() < self.pending_until) return else {
+                state.logEvent(.pick, .warning, try std.fmt.allocPrint(temp, "未确认抢到 {s}（{d}）：等待 3 秒仍未确认归属，将重新检查。", .{ championName(state, self.pending_pick), self.pending_pick }));
+                self.pending_pick = 0;
+            }
         }
-        var p = self.prefs();
         if (!p.auto_pick or p.count == 0) return;
         var pickable: [256]i32 = undefined;
         var pickable_count: usize = 0;
@@ -383,22 +465,29 @@ pub const Service = struct {
             }
         }
         p = self.prefs();
+        self.pick_audit.observe(&p, state, pickable[0..pickable_count]);
         const choice = logic.choose(&p, state.queue_id, mode, session.value, pickable[0..pickable_count]) orelse return;
         if (!gate.allowed(choice.champion, win.now())) return;
         if (!std.meta.eql(self.prefs(), p)) return;
         const prefix = if (choice.legacy) "/lol-champ-select/v1/session" else "/lol-lobby-team-builder/champ-select/v1/session";
         const path = if (choice.action) |id| try std.fmt.allocPrint(temp, "{s}/actions/{d}", .{ prefix, id }) else try std.fmt.allocPrint(temp, "{s}/bench/swap/{d}", .{ prefix, choice.champion });
         const body = if (choice.action != null) try std.fmt.allocPrint(temp, "{{\"championId\":{d},\"completed\":true}}", .{choice.champion}) else "";
-        const result = try lcu.requestAuthenticated(client, temp, if (choice.action != null) "PATCH" else "POST", path, body);
+        self.pick_audit.attempt(choice.champion);
+        state.logEvent(.pick, .info, try std.fmt.allocPrint(temp, "尝试抢取 {s}（{d}）· 顺位 {d}。", .{ championName(state, choice.champion), choice.champion, p.rank(choice.champion) + 1 }));
+        const result = lcu.requestAuthenticated(client, temp, if (choice.action != null) "PATCH" else "POST", path, body) catch |err| {
+            state.logEvent(.pick, .failure, try std.fmt.allocPrint(temp, "{s}（{d}）的选取请求中断（{s}），结果未确认。", .{ championName(state, choice.champion), choice.champion, @errorName(err) }));
+            return err;
+        };
         gate.record(win.now(), result.ok());
         if (result.ok()) {
             // Confirm ownership from the next WS session update, not the HTTP status.
             self.pending_pick = choice.champion;
             self.pending_resynced = false;
             self.pending_until = win.now() + 3000;
-            state.log("选人请求已提交，等待客户端事件确认。");
+            state.logEvent(.pick, .info, try std.fmt.allocPrint(temp, "{s}（{d}）的选取请求已提交，等待归属确认。", .{ championName(state, choice.champion), choice.champion }));
         } else {
-            state.log(try std.fmt.allocPrint(temp, "英雄暂不可交换（HTTP {d}），刷新可用池后重试。", .{result.status}));
+            self.pick_audit.rejected(choice.champion);
+            state.logEvent(.pick, .failure, try std.fmt.allocPrint(temp, "未抢到 {s}（{d}）· 顺位 {d}：请求未成功（HTTP {d}），将根据可用池重试。", .{ championName(state, choice.champion), choice.champion, p.rank(choice.champion) + 1, result.status }));
         }
     }
 };

@@ -2,22 +2,22 @@ const std = @import("std");
 const t = @import("types.zig");
 
 pub const tile = 128;
-pub const side = 512;
-pub const per_atlas = 16;
+pub const side = 640;
+pub const per_atlas = 25;
 pub const atlas_count = (t.max_champions + per_atlas - 1) / per_atlas;
 
 pub fn imageId(index: usize) u64 {
     return 0x43410000 + index / per_atlas;
 }
 pub fn x(index: usize) usize {
-    return (index % 4) * tile;
+    return (index % 5) * tile;
 }
 pub fn y(index: usize) usize {
-    return (index % per_atlas / 4) * tile;
+    return (index % per_atlas / 5) * tile;
 }
 
-/// Pack LCU portraits into 512px textures: all 256 champions fit in the
-/// Native SDK's 16 image slots, shared by the grid and priority list.
+/// Eleven 640px atlases cover all 256 champions, leaving image slots for
+/// the account avatar. Grid and priority rows share these textures.
 pub const Store = struct {
     pixels: [atlas_count][]u8 = @splat(&.{}),
     ready: [t.max_champions]bool = @splat(false),

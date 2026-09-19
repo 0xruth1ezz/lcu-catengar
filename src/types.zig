@@ -64,10 +64,64 @@ pub const Champion = struct {
     icon_path: Text(768) = .{},
 };
 
+pub const ConnectionState = enum { connecting, waiting_client, reconnecting, authorizing, permission_required, helper_missing, helper_failed, failed };
+
+pub const Profile = struct {
+    name: Text(96) = .{},
+    riot_id: Text(128) = .{},
+    icon_id: ?u32 = null,
+    icon_path: Text(768) = .{},
+};
+
+pub const LogKind = enum { app, connection, accept, pick };
+pub const LogLevel = enum { info, success, warning, failure };
+pub const LogEntry = struct {
+    timestamp: Text(32) = .{},
+    kind: LogKind = .app,
+    level: LogLevel = .info,
+    message: Text(512) = .{},
+    pub fn init(kind: LogKind, level: LogLevel, message: []const u8) LogEntry {
+        var entry: LogEntry = .{ .kind = kind, .level = level, .message = Text(512).init(message) };
+        const c = @import("windows.zig").c;
+        var time: c.SYSTEMTIME = undefined;
+        c.GetLocalTime(&time);
+        var buffer: [32]u8 = undefined;
+        entry.timestamp.set(std.fmt.bufPrint(&buffer, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}", .{ time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond, time.wMilliseconds }) catch "时间不可用");
+        return entry;
+    }
+    pub fn kindLabel(self: *const LogEntry) []const u8 {
+        return switch (self.kind) {
+            .app => "应用",
+            .connection => "连接",
+            .accept => "接受对局",
+            .pick => "自动选取",
+        };
+    }
+    pub fn levelLabel(self: *const LogEntry) []const u8 {
+        return switch (self.level) {
+            .info => "信息",
+            .success => "成功",
+            .warning => "提醒",
+            .failure => "失败",
+        };
+    }
+    pub fn failed(self: *const LogEntry) bool {
+        return self.level == .failure;
+    }
+};
+pub const LogSink = struct {
+    context: *anyopaque,
+    emit: *const fn (*anyopaque, LogEntry) void,
+};
+
 pub const Snapshot = struct {
     catalog_generation: u64 = 0,
     connected: bool = false,
+    profile: Profile = .{},
     auth_retry_available: bool = false,
+    connection: ConnectionState = .connecting,
+    settings_error: Text(192) = .{},
+    pick_supported: ?bool = null,
     websocket: bool = false,
     status: Text(192) = Text(192).init("正在寻找 League 客户端…"),
     phase: Text(64) = Text(64).init("未连接"),
@@ -83,13 +137,21 @@ pub const Snapshot = struct {
     accepted: usize = 0,
     swapped: usize = 0,
     last_pick_name: Text(96) = .{},
-    logs: [10]Text(192) = @splat(.{}),
+    logs: [10]LogEntry = @splat(.{}),
     log_count: usize = 0,
+    log_sink: ?LogSink = null,
     pub fn log(self: *Snapshot, message: []const u8) void {
-        if (self.log_count > 0 and std.mem.eql(u8, self.logs[0].text(), message)) return;
+        // Resource/settings retries can repeat on every service tick. Keep
+        // those status messages quiet; actual activity events are never deduped.
+        if (self.log_count > 0 and std.mem.eql(u8, self.logs[0].message.text(), message)) return;
+        self.logEvent(.app, .info, message);
+    }
+    pub fn logEvent(self: *Snapshot, kind: LogKind, level: LogLevel, message: []const u8) void {
+        const entry = LogEntry.init(kind, level, message);
         const n = @min(self.log_count, self.logs.len - 1);
-        std.mem.copyBackwards(Text(192), self.logs[1 .. n + 1], self.logs[0..n]);
-        self.logs[0].set(message);
+        std.mem.copyBackwards(LogEntry, self.logs[1 .. n + 1], self.logs[0..n]);
+        self.logs[0] = entry;
         self.log_count = @min(self.logs.len, self.log_count + 1);
+        if (self.log_sink) |sink| sink.emit(sink.context, entry);
     }
 };

@@ -5,7 +5,7 @@ pub const height = 48;
 
 /// Real, keyboard-accessible buttons sit below the decorative traffic lights.
 /// Native excludes their hit targets from the surrounding OS drag region.
-pub fn build(comptime Msg: type, ui: *canvas.Ui(Msg), hovered: bool) canvas.Ui(Msg).Node {
+pub fn build(comptime Msg: type, ui: *canvas.Ui(Msg), hovered: bool, logo_ready: bool) canvas.Ui(Msg).Node {
     return ui.column(.{}, .{
         ui.row(.{
             .height = height,
@@ -26,7 +26,10 @@ pub fn build(comptime Msg: type, ui: *canvas.Ui(Msg), hovered: bool) canvas.Ui(M
                 light(Msg, ui, 0x28c840, 0x1ba832, "maximize-2", .zoom_window, "最大化或还原", hovered),
             }),
             ui.spacer(1),
-            ui.text(.{ .size = .sm, .style_tokens = .{ .foreground = .text_muted } }, "Catengar"),
+            ui.row(.{ .gap = 8, .cross = .center }, .{
+                ui.image(.{ .width = if (logo_ready) 20 else 0, .height = 20, .image = if (logo_ready) @import("app_icon.zig").titlebar_image_id else 0, .semantics = .{ .label = "Catengar logo" } }),
+                ui.text(.{ .size = .sm, .style_tokens = .{ .foreground = .text_muted } }, "Catengar"),
+            }),
             ui.spacer(1),
             ui.el(.stack, .{ .width = 80 }, .{}),
         }),

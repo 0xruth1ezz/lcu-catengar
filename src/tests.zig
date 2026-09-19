@@ -1,5 +1,9 @@
 const std = @import("std");
 
+test {
+    _ = @import("journal_tests.zig");
+}
+
 test "UAC cancellation stays quiet until the user explicitly retries" {
     var prompt: @import("auth.zig").PromptGate = .{};
     try std.testing.expect(prompt.begin());
@@ -125,6 +129,13 @@ test "success toasts queue confirmed actions once and dismiss independently" {
 }
 
 test "continuous champion grid reaches every hero and keeps a stable scroll extent" {
+    for ([_]f32{ 880, 1120, 1440, 1920 }) |width| {
+        const cols = grid.columns(width);
+        const occupied = @as(f32, @floatFromInt(cols)) * grid.stride - grid.gap;
+        try testing.expect(occupied <= grid.libraryWidth(width));
+    }
+    try testing.expectEqual(@as(usize, 4), grid.columns(880));
+    try testing.expectEqual(@as(usize, 5), grid.columns(1120));
     for ([_]usize{ 0, 1, 9, 241, t.max_champions }) |count| {
         for ([_]usize{ 2, 3, 4, 8, 10 }) |cols| {
             const rows = std.math.divCeil(usize, count, cols) catch unreachable;
@@ -156,13 +167,14 @@ test "portrait atlas covers all champions without overwriting neighboring tiles"
     const blue = [_]u8{ 0, 0, 255, 255 };
     _ = try store.put(a, 0, 1, 1, &red);
     _ = try store.put(a, 1, 1, 1, &blue);
-    for ([_]usize{ 0, 1, 15, 16, 240, 255 }) |index| {
+    for (0..t.max_champions) |index| {
         const bytes = try store.put(a, index, 1, 1, &blue);
         const start = (portraits.y(index) * portraits.side + portraits.x(index)) * 4;
         const end = ((portraits.y(index) + portraits.tile - 1) * portraits.side + portraits.x(index) + portraits.tile - 1) * 4;
         try testing.expectEqualSlices(u8, &blue, bytes[start..][0..4]);
         try testing.expectEqualSlices(u8, &blue, bytes[end..][0..4]);
-        try testing.expect(portraits.imageId(index) - portraits.imageId(0) < 16);
+        // One additional slot is reserved for the account avatar.
+        try testing.expect(portraits.imageId(index) - portraits.imageId(0) < 15);
     }
     _ = try store.put(a, 0, 1, 1, &red);
     try testing.expectEqualSlices(u8, &blue, store.pixels[0][portraits.tile * 4 ..][0..4]);
@@ -534,6 +546,90 @@ const Mock = struct {
         return .{ .status = step.status, .body = step.body };
     }
 };
+
+test "current account uses exact Riot ID, supports Unicode and never copies internal IDs" {
+    const profile = @import("profile.zig");
+    const json = try std.json.parseFromSlice(std.json.Value, a,
+        \\{"gameName":"峡谷 小猫🐈","displayName":"旧名字","tagLine":"CN123","profileIconId":0,"summonerId":999999}
+    , .{});
+    defer json.deinit();
+    const value = profile.parse(json.value);
+    try testing.expectEqualStrings("峡谷 小猫🐈", value.name.text());
+    try testing.expectEqualStrings("峡谷 小猫🐈#CN123", value.riot_id.text());
+    try testing.expectEqual(@as(?u32, 0), value.icon_id);
+    for ([_][]const u8{
+        "{\"displayName\":\"Old Name\",\"summonerId\":123}",
+        "{\"gameName\":\"New Name\",\"tagLine\":\"\"}",
+        "{\"gameName\":\"New Name\",\"tagLine\":\"bad#tag\"}",
+        "{\"gameName\":\"New Name\",\"tagLine\":\"bad\\nID\"}",
+        "null",
+    }) |body| {
+        const invalid = try std.json.parseFromSlice(std.json.Value, a, body, .{});
+        defer invalid.deinit();
+        try testing.expectEqual(@as(usize, 0), profile.parse(invalid.value).riot_id.len);
+    }
+    const oversized = try std.fmt.allocPrint(a, "{{\"gameName\":\"{s}\",\"tagLine\":\"CN1\"}}", .{"x" ** 97});
+    defer a.free(oversized);
+    const long = try std.json.parseFromSlice(std.json.Value, a, oversized, .{});
+    defer long.deinit();
+    try testing.expectEqual(@as(usize, 0), profile.parse(long.value).riot_id.len);
+}
+
+test "account refresh clears stale users and avatars after logout, auth errors and account changes" {
+    const profile = @import("profile.zig");
+    var value: t.Profile = .{ .name = t.Text(96).init("Old"), .riot_id = t.Text(128).init("Old#123"), .icon_id = 5, .icon_path = t.Text(768).init("old-avatar.jpg") };
+    const bodies = [_][]const u8{
+        "{\"gameName\":\"New\",\"tagLine\":\"CN1\",\"profileIconId\":5}",
+        "{\"gameName\":\"New\",\"tagLine\":\"CN1\",\"profileIconId\":6}",
+        "null",
+    };
+    for (bodies, 0..) |body, i| {
+        var client: Mock = .{ .steps = &.{.{ .method = "GET", .path = profile.endpoint, .body = body }} };
+        try profile.refresh(a, &client, &value);
+        if (i == 0) {
+            try testing.expectEqualStrings("New#CN1", value.riot_id.text());
+            try testing.expectEqualStrings("old-avatar.jpg", value.icon_path.text());
+        } else try testing.expectEqual(@as(usize, 0), value.icon_path.len);
+    }
+    for ([_]u32{ 404, 500, 401, 403 }) |status| {
+        value.name.set("Old");
+        value.riot_id.set("Old#123");
+        var client: Mock = .{ .steps = &.{.{ .method = "GET", .path = profile.endpoint, .body = "{}", .status = status }} };
+        if (status == 401 or status == 403) {
+            try testing.expectError(error.AuthenticationExpired, profile.refresh(a, &client, &value));
+        } else try profile.refresh(a, &client, &value);
+        try testing.expectEqualDeep(t.Profile{}, value);
+    }
+    const state = try a.create(t.Snapshot);
+    defer a.destroy(state);
+    state.* = .{};
+    state.profile.name.set("Account");
+    try testing.expect(!profile.visible(state));
+    state.connected = true;
+    try testing.expect(profile.visible(state));
+    state.profile = .{};
+    try testing.expect(!profile.visible(state));
+}
+
+test "summoner update and delete events replace the current account without polling" {
+    var cache: events.Cache = .{};
+    defer cache.deinit();
+    const index = @intFromEnum(events.Slot.summoner);
+    try testing.expect(try cache.apply(
+        \\[8,"OnJsonApiEvent_lol-summoner_v1_current-summoner",{"uri":"/lol-summoner/v1/current-summoner","eventType":"Update","data":{"gameName":"猫","tagLine":"CN1","profileIconId":29}}]
+    ));
+    const response = try cache.read(a, index);
+    defer a.free(response.body);
+    const json = try response.json(a);
+    defer json.deinit();
+    try testing.expectEqualStrings("猫#CN1", @import("profile.zig").parse(json.value).riot_id.text());
+    try testing.expect(try cache.apply(
+        \\[8,"OnJsonApiEvent_lol-summoner_v1_current-summoner",{"uri":"/lol-summoner/v1/current-summoner","eventType":"Delete","data":null}]
+    ));
+    const deleted = try cache.read(a, index);
+    defer a.free(deleted.body);
+    try testing.expectEqual(@as(u32, 404), deleted.status);
+}
 test "automation flow confirms a swap from a fresh session" {
     const service = try a.create(@import("service.zig").Service);
     defer a.destroy(service);
@@ -557,16 +653,22 @@ test "automation flow confirms a swap from a fresh session" {
     var accept: l.RetryGate = .{};
     var toast: toasts.State = .{};
     try service.tick(arena.allocator(), &client, state, &gate, &accept);
+    try testing.expectEqual(@as(?bool, true), state.pick_supported);
     toast.observe(state, 0);
     try testing.expectEqual(@as(usize, 0), toast.count);
     try testing.expectEqual(@as(usize, 0), state.swapped);
     try testing.expectEqual(@as(i32, 107), service.pending_pick);
+    try testing.expectEqual(t.LogLevel.info, state.logs[0].level);
+    try testing.expect(std.mem.indexOf(u8, state.logs[0].message.text(), "等待归属确认") != null);
     try service.tick(arena.allocator(), &client, state, &gate, &accept);
     toast.observe(state, 100);
     try testing.expectEqual(@as(usize, 1), toast.count);
     try testing.expectEqualStrings("抢英雄成功", toast.messages[0].title.text());
     try testing.expectEqual(client.steps.len, client.cursor);
     try testing.expectEqual(@as(usize, 1), state.swapped);
+    try testing.expectEqual(t.LogKind.pick, state.logs[0].kind);
+    try testing.expectEqual(t.LogLevel.success, state.logs[0].level);
+    try testing.expect(std.mem.indexOf(u8, state.logs[0].message.text(), "客户端已确认归属") != null);
 }
 test "disabled auto-accept reads phase without submitting a write" {
     const service = try a.create(@import("service.zig").Service);
@@ -575,11 +677,13 @@ test "disabled auto-accept reads phase without submitting a write" {
     const state = try a.create(t.Snapshot);
     defer a.destroy(state);
     state.* = .{};
+    state.pick_supported = true;
     var client: Mock = .{ .steps = &.{.{ .method = "GET", .path = "/lol-gameflow/v1/gameflow-phase", .body = "\"ReadyCheck\"" }} };
     var gate: l.RetryGate = .{};
     var accept: l.RetryGate = .{};
     try service.tick(a, &client, state, &gate, &accept);
     try testing.expectEqual(@as(usize, 1), client.cursor);
+    try testing.expectEqual(@as(?bool, null), state.pick_supported);
 }
 
 test "successful accept is submitted once until the ready check ends" {
@@ -603,6 +707,13 @@ test "successful accept is submitted once until the ready check ends" {
     try service.tick(a, &client, state, &gate, &accept);
     try service.tick(a, &client, state, &gate, &accept);
     try testing.expectEqual(@as(usize, 1), state.accepted);
+    try testing.expectEqual(t.LogKind.accept, state.logs[0].kind);
+    try testing.expectEqual(t.LogLevel.success, state.logs[0].level);
+    var accept_logs: usize = 0;
+    for (state.logs[0..state.log_count]) |entry| if (entry.kind == .accept) {
+        accept_logs += 1;
+    };
+    try testing.expectEqual(@as(usize, 1), accept_logs);
     try testing.expectEqual(client.steps.len, client.cursor);
 }
 
@@ -627,6 +738,8 @@ test "HTTP competition failure is not counted as a swap" {
     try service.tick(arena.allocator(), &client, state, &gate, &accept);
     try testing.expectEqual(@as(usize, 0), state.swapped);
     try testing.expectEqual(@as(u8, 1), gate.attempts);
+    try testing.expectEqual(t.LogLevel.failure, state.logs[0].level);
+    try testing.expect(std.mem.indexOf(u8, state.logs[0].message.text(), "HTTP 409") != null);
 }
 
 test "ranked session is gated before champion selection endpoints" {
@@ -645,4 +758,60 @@ test "ranked session is gated before champion selection endpoints" {
     var accept: l.RetryGate = .{};
     try service.tick(a, &client, state, &gate, &accept);
     try testing.expectEqual(client.steps.len, client.cursor);
+    try testing.expectEqual(@as(?bool, false), state.pick_supported);
+}
+
+test "automation labels distinguish saved switches from connection and queue readiness" {
+    const ui = @import("ui_state.zig");
+    const state = try a.create(t.Snapshot);
+    defer a.destroy(state);
+    state.* = .{};
+    var prefs: t.Preferences = .{};
+    try testing.expectEqualStrings("适用于所有队列", ui.acceptLabel(&prefs, state));
+    try testing.expectEqualStrings("", ui.pickLabel(&prefs, state));
+    prefs.auto_accept = true;
+    prefs.auto_pick = true;
+    try testing.expectEqualStrings("已开启 · 请先添加优先英雄", ui.pickLabel(&prefs, state));
+    prefs.add(107);
+    try testing.expectEqualStrings("已开启 · 等待客户端连接", ui.pickLabel(&prefs, state));
+    try testing.expectEqualStrings("已开启 · 等待客户端连接", ui.acceptLabel(&prefs, state));
+    state.connected = true;
+    state.phase.set("ChampSelect");
+    try testing.expectEqualStrings("已开启 · 正在确认对局模式", ui.pickLabel(&prefs, state));
+    state.pick_supported = false;
+    try testing.expectEqualStrings("当前模式不支持自动选取", ui.pickLabel(&prefs, state));
+    state.pick_supported = true;
+    try testing.expectEqualStrings("已开启 · 等待更高优先级的可用英雄", ui.pickLabel(&prefs, state));
+    state.connected = false;
+    try testing.expectEqualStrings("已开启 · 等待客户端连接", ui.pickLabel(&prefs, state));
+    try testing.expect(prefs.auto_accept and prefs.auto_pick);
+    try testing.expectEqual(@as(usize, 1), prefs.count);
+}
+
+test "connection notices keep actionable failures visible without surfacing protocol logs" {
+    const ui = @import("ui_state.zig");
+    const state = try a.create(t.Snapshot);
+    defer a.destroy(state);
+    state.* = .{};
+    state.status.set("WebSocket 暂不可用，REST 降级");
+    state.connection = .waiting_client;
+    try testing.expectEqualStrings("", ui.connectionNotice(state));
+    for ([_]t.ConnectionState{ .permission_required, .helper_missing, .helper_failed, .failed, .reconnecting, .authorizing }) |connection| {
+        state.connection = connection;
+        try testing.expect(ui.connectionNotice(state).len > 0);
+    }
+    state.settings_error.set("设置保存失败");
+    state.connected = true;
+    state.phase.set("None");
+    try testing.expectEqualStrings("客户端已连接", ui.connectionLabel(state));
+    try testing.expectEqualStrings("空闲", ui.phaseLabel(state));
+    state.phase.set("Matchmaking");
+    try testing.expectEqualStrings("客户端已连接", ui.connectionLabel(state));
+    try testing.expectEqualStrings("匹配中", ui.phaseLabel(state));
+    state.phase.set("FuturePhase");
+    try testing.expectEqualStrings("对局状态待同步", ui.phaseLabel(state));
+    try testing.expectEqualStrings("", ui.connectionNotice(state));
+    try testing.expectEqualStrings("设置保存失败", state.settings_error.text());
+    state.connected = false;
+    try testing.expectEqualStrings("", ui.phaseLabel(state));
 }

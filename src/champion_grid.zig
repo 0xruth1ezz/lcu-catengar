@@ -4,10 +4,13 @@ pub const tile_height: f32 = 96;
 pub const gap: f32 = 10;
 pub const stride: f32 = tile_height + gap;
 
+pub fn libraryWidth(canvas_width: f32) f32 {
+    // Outer padding 24, shared panel padding 18, gap 20; columns grow 3:2.
+    return @max(1, (canvas_width - 48 - 36 - 20) * 0.6);
+}
+
 pub fn columns(canvas_width: f32) usize {
-    // Window padding (48), shared panel padding (36), two arrow gaps (48),
-    // and the 24 px arrow are shared by the two equal columns.
-    const library_width = @max(1, (canvas_width - 156) / 2);
+    const library_width = libraryWidth(canvas_width);
     return @intFromFloat(std.math.clamp(@floor((library_width + gap) / (tile_height + gap)), 2, 10));
 }
 

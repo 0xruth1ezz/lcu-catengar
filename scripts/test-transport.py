@@ -78,8 +78,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with self.server.lock:
                 self.server.streams.append(self.connection)
             try:
-                # Read all five subscription frames before sending a phase event.
-                for _ in range(5):
+                # Read all six subscription frames before sending a phase event.
+                for _ in range(6):
                     first = self.rfile.read(2)
                     if len(first) != 2:
                         return
