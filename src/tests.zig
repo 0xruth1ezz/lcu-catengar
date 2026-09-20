@@ -3,6 +3,8 @@ const std = @import("std");
 test {
     _ = @import("journal_tests.zig");
     _ = @import("selection_policy_tests.zig");
+    _ = @import("auto_accept_tests.zig");
+    _ = @import("priority_cache_tests.zig");
 }
 
 test "UAC cancellation stays quiet until the user explicitly retries" {

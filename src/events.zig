@@ -48,6 +48,11 @@ pub const Cache = struct {
         defer self.mutex.unlock();
         return self.transitions;
     }
+    pub fn isPhase(self: *Cache, phase: []const u8) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return std.mem.eql(u8, self.phase.text(), phase);
+    }
     fn replace(self: *Cache, i: usize, status: u32, owned: ?[]u8) void {
         if (self.entries[i].body) |old| a.free(old);
         self.generation += 1;
@@ -123,11 +128,15 @@ pub const Cache = struct {
     }
     /// Subscribe first, then seed. Events received during a REST request win.
     pub fn health(self: *Cache, temp: std.mem.Allocator, rest: anytype) !void {
-        const revision = self.version(0);
-        const response = try rest.request(temp, "GET", paths[0], "");
+        try self.refresh(temp, rest, .phase);
+    }
+    pub fn refresh(self: *Cache, temp: std.mem.Allocator, rest: anytype, slot: Slot) !void {
+        const i = @intFromEnum(slot);
+        const revision = self.version(i);
+        const response = try rest.request(temp, "GET", paths[i], "");
         try response.authenticated();
-        if (!response.ok()) return error.PhaseUnavailable;
-        try self.seed(0, revision, response);
+        if (slot == .phase and !response.ok()) return error.PhaseUnavailable;
+        try self.seed(i, revision, response);
     }
     pub fn sync(self: *Cache, temp: std.mem.Allocator, rest: anytype, missing_only: bool) !void {
         for (paths, 0..) |path, i| {
@@ -140,6 +149,32 @@ pub const Cache = struct {
             if (response.status == 401 or response.status == 403) return error.AuthenticationExpired;
             if (i == 0 and !response.ok()) return error.PhaseUnavailable;
             try self.seed(i, revision, response);
+        }
+    }
+};
+
+/// A connected socket does not guarantee that startup subscriptions or every
+/// ready-check event arrived. Keep a bounded REST safety net for auto-accept;
+/// an early 404 must not remain cached for the entire ReadyCheck phase.
+pub const Reconciler = struct {
+    next_health: u64 = 0,
+    next_ready: u64 = 0,
+
+    pub fn update(self: *Reconciler, temp: std.mem.Allocator, rest: anytype, cache: *Cache, auto_accept: bool, now: u64) !void {
+        const interval: u64 = if (auto_accept) 1000 else 15000;
+        // Enabling the switch must also shorten an already scheduled probe.
+        self.next_health = @min(self.next_health, now + interval);
+        if (now >= self.next_health) {
+            try cache.health(temp, rest);
+            self.next_health = now + interval;
+        }
+        if (!auto_accept or !cache.isPhase("ReadyCheck")) {
+            self.next_ready = 0;
+            return;
+        }
+        if (now >= self.next_ready) {
+            try cache.refresh(temp, rest, .ready);
+            self.next_ready = now + 500;
         }
     }
 };
@@ -232,24 +267,28 @@ pub const Stream = struct {
 };
 
 /// Automation reads cached WS resources; writes still go straight to REST.
-pub const CachedClient = struct {
-    rest: *lcu.Client,
-    cache: *Cache,
-    revision: ?u64 = null,
-    pub fn request(self: *CachedClient, allocator: std.mem.Allocator, method: []const u8, path: []const u8, body: []const u8) !lcu.Response {
-        if (std.mem.eql(u8, method, "GET")) {
-            if (self.revision == null) {
-                self.cache.mutex.lock();
-                self.revision = self.cache.generation;
-                self.cache.mutex.unlock();
+pub const CachedClient = CachedClientFor(lcu.Client);
+
+pub fn CachedClientFor(comptime Rest: type) type {
+    return struct {
+        rest: *Rest,
+        cache: *Cache,
+        revision: ?u64 = null,
+        pub fn request(self: *@This(), allocator: std.mem.Allocator, method: []const u8, path: []const u8, body: []const u8) !lcu.Response {
+            if (std.mem.eql(u8, method, "GET")) {
+                if (self.revision == null) {
+                    self.cache.mutex.lock();
+                    self.revision = self.cache.generation;
+                    self.cache.mutex.unlock();
+                }
+                const i = Cache.index(path) orelse return error.UnsubscribedResource;
+                return self.cache.read(allocator, i);
             }
-            const i = Cache.index(path) orelse return error.UnsubscribedResource;
-            return self.cache.read(allocator, i);
+            self.cache.mutex.lock();
+            const fresh = self.revision != null and self.revision.? == self.cache.generation;
+            self.cache.mutex.unlock();
+            if (!fresh) return .{ .status = 409, .body = "null" };
+            return self.rest.request(allocator, method, path, body);
         }
-        self.cache.mutex.lock();
-        const fresh = self.revision != null and self.revision.? == self.cache.generation;
-        self.cache.mutex.unlock();
-        if (!fresh) return .{ .status = 409, .body = "null" };
-        return self.rest.request(allocator, method, path, body);
-    }
-};
+    };
+}

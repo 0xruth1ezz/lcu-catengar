@@ -383,8 +383,8 @@ fn initFx(model: *Model, fx: *Effects) void {
     }
     portrait_loader = portrait_worker.Worker.create(notifyPortraits) catch null;
     instance.watch(notify) catch {};
+    loadPortraits(model, fx);
     if (preview_catalog.len > 0) {
-        loadPortraits(model, fx);
         return;
     }
     update_worker = updater.Worker.create(service.root, @import("catengar_options").version, notifyUpdate) catch null;

@@ -55,8 +55,20 @@ def main():
         data = root / "data" / "LoLRengar"
         data.mkdir(parents=True)
         (data / "settings.json").write_text(json.dumps({
-            "version": 1, "auto_accept": False, "auto_pick": False,
+            "version": 1, "auto_accept": False, "auto_pick": False, "priority": [107],
         }), encoding="utf-8")
+        # Exercise startup restoration and portrait decoding without LCU data.
+        portrait = data / "cache" / "offline-fixture" / "champion-107.png"
+        portrait.parent.mkdir(parents=True)
+        shutil.copy2(Path(__file__).resolve().parent.parent / "assets" / "catengar-icon.png", portrait)
+        (data / "priority-champions.json").write_text(json.dumps({
+            "version": 1,
+            "champions": [{
+                "id": 107, "name": "雷恩加尔", "alias": "Rengar",
+                "asset": "/lol-game-data/assets/v1/champion-icons/107.png",
+                "portrait": "cache/offline-fixture/champion-107.png",
+            }],
+        }, ensure_ascii=False), encoding="utf-8")
         env = os.environ.copy()
         env["LOCALAPPDATA"] = str(root / "data")
         env["APPDATA"] = str(root / "roaming")
@@ -98,7 +110,7 @@ def main():
                 if process.poll() is None:
                     process.terminate()
                 process.wait(timeout=10)
-        print("PASS: portable app displayed its window and survived startup in an isolated profile")
+        print("PASS: portable app displayed its window and survived startup with an isolated offline priority cache")
 
 
 if __name__ == "__main__":

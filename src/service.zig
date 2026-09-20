@@ -7,6 +7,7 @@ const settings = @import("settings.zig");
 const win = @import("windows.zig");
 const events = @import("events.zig");
 const profile = @import("profile.zig");
+const priority_cache = @import("priority_cache.zig");
 const a = std.heap.page_allocator;
 
 pub const Service = struct {
@@ -27,9 +28,16 @@ pub const Service = struct {
     pending_resynced: bool = false,
     pick_game_id: i64 = 0,
     pick_audit: @import("pick_audit.zig").Audit = .{},
+    cached_priorities: priority_cache.Cache = .{},
+    next_priority_save: u64 = 0,
 
     pub fn init(self: *Service, io: std.Io) !void {
-        self.root = try win.dataDirectory(a);
+        const root = try win.dataDirectory(a);
+        defer a.free(root);
+        try self.initAt(io, root);
+    }
+    pub fn initAt(self: *Service, io: std.Io, root: []const u8) !void {
+        self.root = try a.dupe(u8, root);
         self.config_path = try std.fs.path.join(a, &.{ self.root, "settings.json" });
         try std.Io.Dir.cwd().createDirPath(io, self.root);
         if (std.Io.Dir.cwd().readFileAlloc(io, self.config_path, a, .limited(64 * 1024))) |bytes| {
@@ -49,6 +57,9 @@ pub const Service = struct {
                 self.snapshot.log("设置文件读取失败，当前使用默认设置。");
             }
         }
+        self.cached_priorities.restore(a, io, self.root, &self.preferences, &self.snapshot) catch {
+            self.snapshot.log("优先英雄缓存暂时无法读取，连接客户端后会重新保存资料。");
+        };
     }
     pub fn deinit(self: *Service) void {
         self.stop.store(true, .release);
@@ -107,6 +118,13 @@ pub const Service = struct {
         const version = self.prefs_version;
         const p = self.preferences;
         self.mutex.unlock();
+        self.cached_priorities.update(&p, state);
+        if (win.now() >= self.next_priority_save) {
+            self.cached_priorities.save(a, io, self.root) catch {
+                self.next_priority_save = win.now() + 5000;
+                state.log("优先英雄资料暂未缓存，将自动重试。");
+            };
+        }
         if (seen.* == version) return;
         settings.save(a, io, self.config_path, &p) catch {
             state.settings_error.set("设置尚未保存，将自动重试。请检查本地目录权限，退出前请确认此提示已消失。");
@@ -159,7 +177,7 @@ pub const Service = struct {
         };
         defer watcher.destroy();
         var recovery: auth.Recovery = .{};
-        var next_health: u64 = 0;
+        var reconciler: events.Reconciler = .{};
         var client: ?lcu.Client = null;
         defer if (client) |*c| c.deinit();
         var stream: ?*events.Stream = null;
@@ -172,6 +190,7 @@ pub const Service = struct {
         var accept_gate: logic.RetryGate = .{};
         var metadata_stage: usize = 0;
         var icon_cursor: usize = 0;
+        var priority_portraits: priority_cache.PortraitQueue = .{};
         var cache: t.Text(768) = .{};
         var connection_nonce: u64 = 0;
         var next_metadata: u64 = 0;
@@ -249,6 +268,7 @@ pub const Service = struct {
                 recovery.connected(identity);
                 metadata_stage = 0;
                 icon_cursor = 0;
+                priority_portraits = .{};
                 connection_nonce = win.now();
                 next_metadata = 0;
                 next_profile = 0;
@@ -261,7 +281,7 @@ pub const Service = struct {
                 accept_gate = .{};
                 self.pending_pick = 0;
                 next_ws = 0;
-                next_health = win.now() + 15000;
+                reconciler = .{};
                 state.logEvent(.connection, .info, "已取得 LCU 认证，正在连接本机客户端。");
             }
             var arena: std.heap.ArenaAllocator = .init(a);
@@ -283,6 +303,7 @@ pub const Service = struct {
                 next_ws = win.now() + 10000;
                 if (stream) |s| {
                     phase_version = s.cache.phaseVersion();
+                    reconciler = .{};
                     state.logEvent(.connection, .success, "WebSocket 已连接，实时监听对局和可用英雄。");
                 } else {
                     var message: [192]u8 = undefined;
@@ -292,12 +313,7 @@ pub const Service = struct {
             state.websocket = stream != null;
             const tick_result = if (stream) |s| blk: {
                 if (client.?.auth_expired) break :blk error.AuthenticationExpired;
-                // A quiet/half-open WS may not report a rotated token. A single
-                // low-frequency authenticated probe also repairs a missed phase.
-                if (win.now() >= next_health) {
-                    s.cache.health(temp, &client.?) catch |err| break :blk err;
-                    next_health = win.now() + 15000;
-                }
+                reconciler.update(temp, &client.?, &s.cache, self.prefs().auto_accept, win.now()) catch |err| break :blk err;
                 const version = s.cache.phaseVersion();
                 if (version != phase_version) {
                     gate = .{};
@@ -340,12 +356,23 @@ pub const Service = struct {
                 next_profile = win.now() + (if (state.profile.name.len > 0) @as(u64, 30000) else 5000);
             }
             if (client.?.auth_expired) continue;
-            if (!std.mem.eql(u8, phase, "ChampSelect") and !std.mem.eql(u8, phase, "ReadyCheck") and win.now() >= next_profile_icon) {
+            var priority_downloaded = false;
+            if (metadata_stage >= 2 and !std.mem.eql(u8, phase, "ChampSelect") and !std.mem.eql(u8, phase, "ReadyCheck")) {
+                const p = self.prefs();
+                if (priority_portraits.next(&p, state, win.now())) |index| {
+                    const champ = &state.champions[index];
+                    cacheIcon(temp, io, &client.?, cache.text(), champ) catch {};
+                    if (champ.icon_path.len > 0) state.icon_count += 1;
+                    priority_downloaded = true;
+                    if (client.?.auth_expired) continue;
+                }
+            }
+            if (!priority_downloaded and !std.mem.eql(u8, phase, "ChampSelect") and !std.mem.eql(u8, phase, "ReadyCheck") and win.now() >= next_profile_icon) {
                 profile.cacheIcon(temp, io, &client.?, self.root, &state.profile) catch {};
                 next_profile_icon = win.now() + 5000;
                 if (client.?.auth_expired) continue;
             }
-            if (!std.mem.eql(u8, phase, "ChampSelect") and !std.mem.eql(u8, phase, "ReadyCheck") and win.now() >= next_metadata) {
+            if (!priority_downloaded and !std.mem.eql(u8, phase, "ChampSelect") and !std.mem.eql(u8, phase, "ReadyCheck") and win.now() >= next_metadata) {
                 if (metadata_stage < 5) {
                     metadata(temp, io, &client.?, self.root, state, metadata_stage, connection_nonce, &cache) catch {
                         if (client.?.auth_expired) continue;
