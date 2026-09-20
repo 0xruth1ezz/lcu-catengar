@@ -7,13 +7,24 @@ test {
     _ = @import("priority_cache_tests.zig");
 }
 
-test "UAC cancellation stays quiet until the user explicitly retries" {
+test "cancelled helper launches stay quiet until the user explicitly retries" {
     var prompt: @import("auth.zig").PromptGate = .{};
-    try std.testing.expect(prompt.begin());
-    for (0..100) |_| try std.testing.expect(!prompt.begin());
+    try std.testing.expect(prompt.begin(0));
+    prompt.failed(error.HelperCancelled, 0);
+    for (0..100) |i| try std.testing.expect(!prompt.begin(i * 10000));
     prompt.retry();
-    try std.testing.expect(prompt.begin());
-    try std.testing.expect(!prompt.begin());
+    try std.testing.expect(prompt.begin(0));
+    try std.testing.expect(!prompt.begin(1));
+}
+
+test "helper launch and IPC failures retry automatically without assuming UAC was denied" {
+    for ([_]anyerror{ error.HelperLaunch, error.HelperMissing, error.HelperPipe, error.HelperTimeout, error.HelperExited }) |err| {
+        var prompt: @import("auth.zig").PromptGate = .{};
+        try std.testing.expect(prompt.begin(0));
+        prompt.failed(err, 100);
+        try std.testing.expect(!prompt.begin(5099));
+        try std.testing.expect(prompt.begin(5100));
+    }
 }
 
 test "credential packets round trip and offline messages carry no token" {
@@ -21,7 +32,7 @@ test "credential packets round trip and offline messages carry no token" {
     const credentials: @import("auth.zig").Credentials = .{ .port = 54321, .pid = 42, .token = @import("types.zig").Text(256).init("offline-fixture-token") };
     const ready = wire.encode(.{ .status = .ready, .credentials = credentials });
     try std.testing.expectEqualDeep(credentials, (try wire.decode(&ready)).credentials);
-    for ([_]wire.Status{ .not_running, .admin_required, .failed }) |status| {
+    for ([_]wire.Status{ .not_running, .client_starting, .admin_required, .failed }) |status| {
         const bytes = wire.encode(.{ .status = status, .credentials = credentials });
         const result = try wire.decode(&bytes);
         try std.testing.expectEqual(status, result.status);

@@ -59,6 +59,7 @@ pub fn build(b: *std.Build) void {
     for ([_][]const u8{ "shell32", "advapi32", "bcrypt", "ole32" }) |lib| auth_tests.root_module.linkSystemLibrary(lib, .{});
     const auth_run = b.addRunArtifact(auth_tests);
     auth_run.addArtifactArg(fixture);
+    if (b.option(bool, "test-auth-elevated", "Explicitly verify the helper's actual administrator token (may request Windows authorization)") orelse false) auth_run.addArg("--elevated");
     b.step("test-auth", "Test credential IPC, identity validation, refresh and helper lifecycle without UAC/LCU").dependOn(&auth_run.step);
     const core_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/tests.zig"),
@@ -112,6 +113,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     }) });
     diag.root_module.linkSystemLibrary("winhttp", .{});
+    diag.root_module.linkSystemLibrary("advapi32", .{});
     diag.root_module.addWin32ResourceFile(.{ .file = b.path("assets/catengar.rc"), .include_paths = &.{b.path("assets")} });
     b.installArtifact(diag);
     b.step("diagnose", "Read-only LCU connection and resource diagnostics").dependOn(&b.addRunArtifact(diag).step);

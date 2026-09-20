@@ -8,18 +8,27 @@ const expect = std.testing.expect;
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     const fixture = args[1];
+    const elevated = args.len == 3 and std.mem.eql(u8, args[2], "--elevated");
     const wake = c.CreateEventW(null, 1, 0, null) orelse return error.EventFailed;
     defer _ = c.CloseHandle(wake);
 
-    var client = try broker.Client.spawn(fixture, false, wake);
+    var client = try broker.Client.spawn(fixture, elevated, wake);
     var live = true;
     defer if (live) client.deinit();
+    try std.testing.expectEqual(if (elevated) true else win.isAdmin(), try win.processIsElevated(client.process));
     try std.testing.expectError(error.HelperIdentity, client.server.verifyClient(c.GetCurrentProcess()));
     var identity: auth.Identity = .{};
+    var recovery: auth.Recovery = .{};
+    try expect((try client.read(wake)).status == .not_running);
+    identity.update(.not_running, null);
+    try expect(!recovery.available(identity, win.now()));
+    try expect((try client.read(wake)).status == .client_starting);
+    identity.update(.client_starting, null);
+    try expect(!recovery.available(identity, win.now()));
     const first = try client.read(wake);
     try expect(first.status == .ready and first.credentials.port == 12345);
     identity.update(.ready, first.credentials);
-    var recovery: auth.Recovery = .{};
+    try expect(recovery.available(identity, win.now()));
     recovery.connected(identity);
     const refreshed = try client.read(wake);
     try expect(refreshed.status == .ready and refreshed.credentials.port == 12346);
@@ -61,5 +70,5 @@ pub fn main(init: std.process.Init) !void {
     try sender.write(.{ .status = .not_running });
     try expect((try server.read(current, wake)).status == .not_running);
     try std.testing.expectError(error.HelperMissing, broker.Client.spawn("C:\\catengar-nonexistent-fixture.exe", false, wake));
-    std.debug.print("Credential helper: IPC, token refresh, peer identities, pipe shutdown and cancellation passed.\n", .{});
+    std.debug.print("Credential helper: actual process elevation, IPC, token refresh, peer identities, pipe shutdown and cancellation passed.\n", .{});
 }

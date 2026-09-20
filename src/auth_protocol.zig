@@ -3,7 +3,7 @@ const discovery = @import("auth_discovery.zig");
 
 // One bounded message; no commands, executable paths or arbitrary operations.
 pub const size = 272;
-pub const Status = enum(u8) { ready = 1, not_running = 2, admin_required = 3, failed = 4 };
+pub const Status = enum(u8) { ready = 1, not_running = 2, admin_required = 3, failed = 4, client_starting = 5 };
 pub const Result = struct { status: Status, credentials: discovery.Credentials = .{ .port = 0, .pid = 0, .token = .{} } };
 
 pub fn encode(result: Result) [size]u8 {

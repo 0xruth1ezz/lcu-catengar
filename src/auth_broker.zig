@@ -131,6 +131,7 @@ const Launch = struct {
     done: c.HANDLE,
     path: [:0]u16,
     args: [:0]u16,
+    command: [:0]u16,
     elevated: bool,
     process: c.HANDLE = null,
     cancelled: bool = false,
@@ -141,11 +142,30 @@ const Launch = struct {
         _ = c.CloseHandle(self.done);
         a.free(self.path);
         a.free(self.args);
+        a.free(self.command);
         a.destroy(self);
     }
 
     fn run(self: *Launch) void {
         defer self.release();
+        // An already elevated parent can pass its real token directly to the
+        // helper. The absence/presence of a UAC window is never a success signal.
+        if (!self.elevated) {
+            var startup = std.mem.zeroes(c.STARTUPINFOW);
+            startup.cb = @sizeOf(c.STARTUPINFOW);
+            startup.dwFlags = c.STARTF_USESHOWWINDOW;
+            startup.wShowWindow = c.SW_HIDE;
+            var process = std.mem.zeroes(c.PROCESS_INFORMATION);
+            const ok = c.CreateProcessW(self.path, self.command, null, null, 0, c.CREATE_NO_WINDOW, null, null, &startup, &process);
+            self.mutex.lock();
+            if (ok != 0) {
+                _ = c.CloseHandle(process.hThread);
+                self.process = process.hProcess;
+            }
+            self.mutex.unlock();
+            _ = c.SetEvent(self.done);
+            return;
+        }
         const com = c.CoInitializeEx(null, c.COINIT_APARTMENTTHREADED | c.COINIT_DISABLE_OLE1DDE);
         defer if (com >= 0) c.CoUninitialize();
         var request = std.mem.zeroes(c.SHELLEXECUTEINFOW);
@@ -178,9 +198,13 @@ const Launch = struct {
         if (c.GetFileAttributesW(path_wide) == c.INVALID_FILE_ATTRIBUTES) return error.HelperMissing;
         const args_wide = try std.unicode.utf8ToUtf16LeAllocZ(a, args);
         errdefer a.free(args_wide);
+        const command_text = try std.fmt.allocPrint(a, "\"{s}\" {s}", .{ path, args });
+        defer a.free(command_text);
+        const command = try std.unicode.utf8ToUtf16LeAllocZ(a, command_text);
+        errdefer a.free(command);
         const done = c.CreateEventW(null, 1, 0, null) orelse return error.HelperLaunch;
         errdefer _ = c.CloseHandle(done);
-        self.* = .{ .path = path_wide, .args = args_wide, .done = done, .elevated = elevated };
+        self.* = .{ .path = path_wide, .args = args_wide, .command = command, .done = done, .elevated = elevated };
         const thread = try std.Thread.spawn(.{}, run, .{self});
         thread.detach();
         return self;
@@ -206,11 +230,15 @@ pub const Client = struct {
     pub fn start(wake: c.HANDLE) !Client {
         const path = try siblingPath("catengar-auth.exe");
         defer a.free(path);
-        return spawn(path, true, wake);
+        var client = try spawn(path, !win.isAdmin(), wake);
+        errdefer client.deinit();
+        if (!try win.processIsElevated(client.process)) return error.HelperNotElevated;
+        return client;
     }
 
     // Test executables use a separate, non-elevated fixture. The production
-    // caller above always launches the fixed sibling helper through runas.
+    // caller above launches only the fixed sibling helper, inheriting an
+    // elevated token when available and using runas otherwise.
     pub fn spawn(path: []const u8, elevated: bool, wake: c.HANDLE) !Client {
         var server = try Server.create();
         errdefer server.deinit();

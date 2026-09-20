@@ -102,6 +102,8 @@ jobs:
           if ($LASTEXITCODE) { throw 'Updater tests failed' }
           & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-target test-core test-images test-ime test-window test-auth --summary all
           if ($LASTEXITCODE) { throw 'Offline tests failed' }
+          python scripts/test-auth-discovery.py
+          if ($LASTEXITCODE) { throw 'Client discovery tests failed' }
           python scripts/test-transport.py
           if ($LASTEXITCODE) { throw 'Transport fault tests failed' }
 

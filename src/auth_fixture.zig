@@ -12,6 +12,8 @@ fn run(init: std.process.Init) !void {
     const args = try broker.arguments(try init.minimal.args.toSlice(init.arena.allocator()));
     var sender = try broker.Sender.connect(args.nonce, args.parent, null);
     defer sender.deinit();
+    try sender.write(.{ .status = .not_running });
+    try sender.write(.{ .status = .client_starting });
     try sender.write(.{ .status = .ready, .credentials = .{ .port = 12345, .pid = 100, .token = Text(256).init("fixture-first") } });
     try sender.write(.{ .status = .ready, .credentials = .{ .port = 12346, .pid = 101, .token = Text(256).init("fixture-refreshed") } });
     try sender.write(.{ .status = .not_running });

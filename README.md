@@ -25,8 +25,8 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Test
 
 英雄详情的「haidou.pro」Tab 需要系统安装 Microsoft Edge WebView2 Runtime，分发时一并保留构建输出中的 `WebView2Loader.dll` 和 `WebView2-LICENSE.txt`。无法启动内嵌网页时，浮窗提示安装 Runtime，并提供重试和「浏览器打开」；自动选人功能仍可使用。海斗网页使用公共 HTTPS 地址，与 LCU 通信分离，不发送本地客户端认证信息。
 
-1. 打开 League 客户端和工具。工具通过隐藏的 PowerShell 子进程读取 `LeagueClientUx.exe` 的命令行，获取 `--app-port` 和 `--remoting-auth-token`。
-2. 主程序以普通权限直接显示窗口，不因认证而重启。后台先尝试普通权限读取，只有需要提权时才通过 UAC 启动独立的 **`catengar-auth.exe` 认证助手**。助手仅持续读取 League 客户端命令行，主界面、配置保存、REST/WebSocket 和自动化仍由普通权限主程序负责。取消授权不会反复弹窗，可点击「授权连接」重试；客户端未启动时不会请求管理员权限。
+1. 打开 League 客户端和工具，顺序不限。工具通过隐藏的 PowerShell 子进程读取 `LeagueClientUx.exe` 和 `LeagueClient.exe` 的命令行，获取 `--app-port` 和 `--remoting-auth-token`。命令行尚无认证信息时，再读取已检测到的客户端程序旁的 `lockfile`，并校验其中的 PID 对应当前 League 后台进程。客户端已经运行但认证尚未就绪时会自动等待重试。
+2. 主程序直接显示窗口，不因认证而重启。后台先尝试读取客户端，确实需要更高权限时才启动独立的 **`catengar-auth.exe` 认证助手**。是否具备管理员权限通过 Windows 进程令牌验证：已有权限时直接继承启动助手，否则请求系统提权；Windows 可按用户设置自动授予权限，无需出现确认弹窗。主程序验证助手的实际权限，助手也自检，以成功建立认证管道并取得客户端认证信息为准。助手仅持续读取 League 客户端认证信息，主界面、配置保存、REST/WebSocket 和自动化仍由主程序负责。系统取消助手启动后不会反复请求，可点击「授权连接」重试；助手启动或管道临时失败会自动退避重试，客户端未启动时不会请求管理员权限。
 3. 英雄库与优先顺序位于同一块面板。英雄库采用连续滚动的头像网格，没有分页或头像下方的名称。按客户端语言的名称或英文名搜索，**仅点击卡片右上角的加号／勾选按钮**加入或取消优先选择；头像和卡片空白不会修改选择。使用右侧上下箭头设置优先级，最多 32 位，排在前面的优先。达到上限后仍可取消已选英雄或查看资料。头像正下方居中的「查看」打开英雄详情浮窗，并立即在唯一的 **haidou.pro** Tab 内加载 `https://haidou.pro/champion/{id}/` 完整网页。查看资料不改变优先顺序；浮窗提供加载提示、刷新网页、启动失败重试、关闭按钮和原生区域的 Escape。点击「浏览器打开」可在默认浏览器查看对应英雄页面。
 4. 顶部「自动接受对局」和整个英雄面板顶部的「自动选取英雄」分别控制两项功能。自动选取是英雄功能区的总开关，关闭时仍可编辑偏好。首次运行两个开关都关闭，后续恢复保存的设置。其下的「总是按照优先顺序选取英雄」复选框默认勾选：持续争取更高优先级的英雄；取消勾选后，本轮自动抢到任意优先英雄并经客户端确认即停止。此策略以 `always_prioritize` 保存，旧设置缺少该字段时默认勾选。启停状态由总开关表示；断线不会改变已保存的开关偏好。
 5. 点击右上方「设置」，在「外观」中选择经典金色、ChatGPT 深色、ChatGPT 浅色、Nord 北欧或 Catppuccin，默认使用经典金色。立即生效，无需重启，选择自动保存到本地设置的 `theme` 字段，下次启动会恢复。设置页也提供重新连接和默认收起的诊断信息；使用「返回」回到英雄选择，搜索与优先顺序会保留。
@@ -158,6 +158,8 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Diagnose
 - `src/window_state.zig`：记录真实 Win32 窗口位置和尺寸，仅首次显示前恢复；`zig build test-window` 验证移动、隐藏、最小化与位置恢复。
 - `src/tests.zig`：离线协议与自动化测试。
 - `src/auth_broker_test.zig` / `src/auth_fixture.zig`：`zig build test-auth` 使用假凭据验证管道通信、身份拒绝、token 刷新、断开退出与读取取消；不请求 UAC、不读取真实认证，测试助手不打包。
+- 手动运行 `zig build test-auth -Dtest-auth-elevated=true` 可额外验证测试助手实际获得管理员令牌并完成管道通信；此模式可能请求 Windows 授权，不在普通 CI 中执行，仍不读取真实客户端认证或发送游戏操作。
+- `python scripts/test-auth-discovery.py` 使用模拟进程和临时连接文件，验证界面进程、后台进程、共享读取、未就绪状态及过期 PID 拒绝；不查询真实客户端，随 CI 执行。
 - `scripts/test-startup.py`：构建后运行 `python scripts/test-startup.py`，将主程序及 WebView2 加载器复制到含空格和特殊字符的临时目录，使用隔离配置关闭自动接受和选人、载入离线优先英雄缓存及头像，验证窗口显示且启动后持续运行。此测试不携带管理员助手，不请求 UAC；结束后只停止测试进程并清理临时目录。可通过 `--build-dir` 检查指定构建。
 - `scripts/test-updater.ps1`：运行 `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/test-updater.ps1`，在临时目录用模拟 release 元数据、ZIP 和测试程序验证版本/摘要/文件清单拒绝、替换、文件占用回滚、确认后等待父进程退出及重新启动。不连接真实 LCU、不修改真实 release 或已安装程序。
 - `scripts/test-transport.py` / `src/transport_test.zig`：本地 TLS/WAMP 故障测试。运行 `python scripts/test-transport.py`，仅需 Python 标准库和已安装的 Zig；模拟拒绝在 REST 连接上升级 WebSocket、空闲连接取消、远端断线、token 更新、端口/PID 更换和重订阅，不读取真实 LCU 认证。`scripts/fixtures/loopback.pem` 是公开的自签名测试证书及测试密钥，仅供这些离线测试使用。

@@ -177,6 +177,7 @@ pub const Service = struct {
         };
         defer watcher.destroy();
         var recovery: auth.Recovery = .{};
+        var logged_auth_error: ?anyerror = null;
         var reconciler: events.Reconciler = .{};
         var client: ?lcu.Client = null;
         defer if (client) |*c| c.deinit();
@@ -202,6 +203,13 @@ pub const Service = struct {
             if (self.auth_retry.swap(false, .acq_rel)) watcher.requestHelper();
             var identity = watcher.read();
             defer @memset(std.mem.asBytes(&identity), 0);
+            if (identity.failure != logged_auth_error) {
+                if (identity.failure) |err| {
+                    var message: [192]u8 = undefined;
+                    state.logEvent(.connection, .failure, std.fmt.bufPrint(&message, "连接助手未能完成认证（{s}）。", .{@errorName(err)}) catch "连接助手未能完成认证。");
+                }
+                logged_auth_error = identity.failure;
+            }
             state.auth_retry_available = switch (identity.status) {
                 .permission_required, .helper_missing, .helper_failed => true,
                 else => false,
@@ -225,7 +233,7 @@ pub const Service = struct {
                 state.pick_supported = null;
                 const previous_connection = state.connection;
                 state.connection = switch (identity.status) {
-                    .starting => .connecting,
+                    .starting, .client_starting => .connecting,
                     .ready => .reconnecting,
                     .not_running => .waiting_client,
                     .admin_required, .failed => .failed,
@@ -242,13 +250,14 @@ pub const Service = struct {
                 if (!recovery.available(identity, win.now())) {
                     state.status.set(switch (identity.status) {
                         .starting => "正在读取 LCU 认证",
+                        .client_starting => "已检测到 League 客户端，等待认证信息就绪",
                         .ready => "正在重新验证 LCU 认证并恢复连接",
                         .not_running => "等待 League 客户端启动",
                         .admin_required => "认证助手暂时无法读取客户端，正在重试",
-                        .authorizing => "等待授权认证助手",
-                        .permission_required => "认证助手未获授权，可点击「授权连接」重试",
+                        .authorizing => "正在启动认证助手并验证实际权限",
+                        .permission_required => "Windows 已取消启动认证助手，可点击「授权连接」重试",
                         .helper_missing => "缺少 catengar-auth.exe，请将它放在主程序旁",
-                        .helper_failed => "认证助手已停止，可点击「授权连接」重试",
+                        .helper_failed => "认证助手连接失败，正在自动重试",
                         .failed => "认证读取暂时失败，正在自动重试",
                     });
                     if (previous_connection != state.connection) state.logEvent(.connection, .info, state.status.text());

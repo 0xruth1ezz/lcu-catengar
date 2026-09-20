@@ -26,6 +26,7 @@ fn serve(init: std.process.Init) !void {
         } else |err| {
             result.status = switch (err) {
                 error.ClientNotRunning => .not_running,
+                error.ClientNotReady => .client_starting,
                 error.AdminRequired => .admin_required,
                 else => .failed,
             };

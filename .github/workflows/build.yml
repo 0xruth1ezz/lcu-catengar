@@ -78,6 +78,8 @@ jobs:
           if ($LASTEXITCODE) { throw 'Window placement tests failed' }
           & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-auth --summary all
           if ($LASTEXITCODE) { throw 'Credential helper tests failed' }
+          python scripts/test-auth-discovery.py
+          if ($LASTEXITCODE) { throw 'Client discovery tests failed' }
 
       - name: Test TLS and WebSocket reconnection offline
         run: |

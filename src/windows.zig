@@ -6,6 +6,7 @@ pub const c = @cImport({
     @cDefine("_FORTIFY_SOURCE", "0");
     @cDefine("WIN32_LEAN_AND_MEAN", "1");
     @cInclude("windows.h");
+    @cInclude("tlhelp32.h");
     @cInclude("winhttp.h");
     @cInclude("shellapi.h");
     @cInclude("shlobj.h");
@@ -104,7 +105,16 @@ pub fn prepareToastWindow() void {
     if (rect.left != x or rect.top != y) _ = c.SetWindowPos(hwnd, null, x, y, 0, 0, c.SWP_NOSIZE | c.SWP_NOACTIVATE | c.SWP_NOZORDER | c.SWP_NOOWNERZORDER);
 }
 pub fn isAdmin() bool {
-    return c.IsUserAnAdmin() != 0;
+    return processIsElevated(c.GetCurrentProcess()) catch false;
+}
+pub fn processIsElevated(process: c.HANDLE) !bool {
+    var token: c.HANDLE = null;
+    if (c.OpenProcessToken(process, c.TOKEN_QUERY, &token) == 0) return error.TokenQuery;
+    defer _ = c.CloseHandle(token);
+    var elevation: c.TOKEN_ELEVATION = std.mem.zeroes(c.TOKEN_ELEVATION);
+    var length: c.DWORD = 0;
+    if (c.GetTokenInformation(token, c.TokenElevation, &elevation, @sizeOf(c.TOKEN_ELEVATION), &length) == 0) return error.TokenQuery;
+    return elevation.TokenIsElevated != 0;
 }
 pub fn dataDirectory(allocator: std.mem.Allocator) ![]const u8 {
     var buffer: [32768]u16 = undefined;

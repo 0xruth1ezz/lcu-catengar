@@ -7,17 +7,22 @@ const broker = @import("auth_broker.zig");
 const win = @import("windows.zig");
 const c = win.c;
 
-/// Reconnects and repeated discovery failures never re-open a denied UAC prompt.
-/// Only the explicit retry button grants another launch attempt this session.
+/// Only an explicitly cancelled launch waits for the user's retry. A failed
+/// helper/IPC connection retries automatically with backoff, independent of UI.
 pub const PromptGate = struct {
-    attempted: bool = false,
-    pub fn begin(self: *PromptGate) bool {
-        if (self.attempted) return false;
-        self.attempted = true;
+    cancelled: bool = false,
+    retry_at: u64 = 0,
+    pub fn begin(self: *PromptGate, now: u64) bool {
+        if (self.cancelled or now < self.retry_at) return false;
+        self.retry_at = now + 5000;
         return true;
     }
+    pub fn failed(self: *PromptGate, err: anyerror, now: u64) void {
+        self.cancelled = err == error.HelperCancelled;
+        self.retry_at = now + 5000;
+    }
     pub fn retry(self: *PromptGate) void {
-        self.attempted = false;
+        self.* = .{};
     }
 };
 /// A failed connection cannot reuse an old discovery result. Even if the token
@@ -40,11 +45,12 @@ pub const Recovery = struct {
     }
 };
 pub const Identity = struct {
-    pub const Status = enum { starting, ready, not_running, admin_required, failed, authorizing, permission_required, helper_missing, helper_failed };
+    pub const Status = enum { starting, ready, not_running, client_starting, admin_required, failed, authorizing, permission_required, helper_missing, helper_failed };
     status: Status = .starting,
     credentials: Credentials = .{ .port = 0, .pid = 0, .token = .{} },
     revision: u64 = 0,
     attempt: u64 = 0,
+    failure: ?anyerror = null,
 
     pub fn update(self: *Identity, status: Status, credentials: ?Credentials) void {
         const changed = self.status != status or if (credentials) |v|
@@ -56,6 +62,7 @@ pub const Identity = struct {
         @memset(std.mem.asBytes(&self.credentials), 0);
         if (credentials) |v| self.credentials = v;
         self.status = status;
+        self.failure = null;
     }
 };
 
@@ -108,13 +115,20 @@ pub const Watcher = struct {
         defer self.mutex.unlock();
         self.identity.update(status, credentials);
     }
+    fn failed(self: *Watcher, status: Identity.Status, err: anyerror) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.identity.update(status, null);
+        self.identity.failure = err;
+    }
     fn run(self: *Watcher) void {
         var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{ .environ = .{ .block = .global } });
         defer threaded.deinit();
         var helper: ?broker.Client = null;
         defer if (helper) |*client| client.deinit();
         var prompt: PromptGate = .{};
-        var helper_error: Identity.Status = .permission_required;
+        var helper_error: Identity.Status = .helper_failed;
+        var helper_failure: anyerror = error.HelperLaunch;
         while (!self.stopping.load(.acquire)) {
             if (self.retry_helper.swap(false, .acq_rel)) prompt.retry();
             if (helper) |*client| {
@@ -123,7 +137,9 @@ pub const Watcher = struct {
                     client.deinit();
                     helper = null;
                     helper_error = .helper_failed;
-                    self.update(helper_error, null);
+                    helper_failure = err;
+                    prompt.failed(err, win.now());
+                    self.failed(helper_error, err);
                     _ = c.WaitForSingleObject(self.poke, 3000);
                     continue;
                 };
@@ -131,6 +147,7 @@ pub const Watcher = struct {
                 self.update(switch (result.status) {
                     .ready => .ready,
                     .not_running => .not_running,
+                    .client_starting => .client_starting,
                     .admin_required => .admin_required,
                     .failed => .failed,
                 }, if (result.status == .ready) result.credentials else null);
@@ -138,25 +155,29 @@ pub const Watcher = struct {
             }
             var credentials = discover(std.heap.page_allocator, threaded.io()) catch |err| {
                 if (err == error.AdminRequired) {
-                    if (!self.stopping.load(.acquire) and prompt.begin()) {
+                    if (!self.stopping.load(.acquire) and prompt.begin(win.now())) {
                         self.update(.authorizing, null);
                         helper = broker.Client.start(self.shutdown) catch |launch_error| {
+                            if (self.stopping.load(.acquire)) return;
+                            prompt.failed(launch_error, win.now());
                             helper_error = switch (launch_error) {
                                 error.HelperMissing => .helper_missing,
-                                error.HelperCancelled, error.Interrupted => .permission_required,
+                                error.HelperCancelled => .permission_required,
                                 else => .helper_failed,
                             };
-                            self.update(helper_error, null);
+                            helper_failure = launch_error;
+                            self.failed(helper_error, launch_error);
                             continue;
                         };
                         continue;
                     }
-                    self.update(helper_error, null);
+                    self.failed(helper_error, helper_failure);
                     _ = c.WaitForSingleObject(self.poke, 3000);
                     continue;
                 }
                 self.update(switch (err) {
                     error.ClientNotRunning => .not_running,
+                    error.ClientNotReady => .client_starting,
                     else => .failed,
                 }, null);
                 _ = c.WaitForSingleObject(self.poke, 3000);
