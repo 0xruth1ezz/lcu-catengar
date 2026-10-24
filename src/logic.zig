@@ -28,7 +28,7 @@ pub fn isAram(queue_id: i32, mode: []const u8) bool {
     // Known queues plus the explicit LCU gameMode for rotated/custom ARAM queues.
     return queue_id == 450 or queue_id == 2400 or std.mem.eql(u8, mode, "ARAM") or std.mem.eql(u8, mode, "ARAM_MAYHEM");
 }
-pub const Selection = struct { champion: i32, action: ?i32 = null, legacy: bool = true };
+pub const Selection = struct { champion: i32, action: ?i32 = null };
 
 pub fn ownChampion(session: Value) i32 {
     const local = get(session, "localPlayerCellId");
@@ -59,18 +59,19 @@ pub fn choose(prefs: *const types.Preferences, queue_id: i32, mode: []const u8, 
     const current = ownChampion(session);
     var pool: [64]i32 = undefined;
     const n = if (yes(get(session, "benchEnabled"))) benchIds(session, &pool) else 0;
-    const legacy_field = get(session, "isLegacyChampSelect");
-    const legacy = legacy_field != .bool or legacy_field.bool;
     for (prefs.ids()[0..@min(prefs.rank(current), prefs.count)]) |id| {
         for (pool[0..n]) |available| {
-            if (id == available and current > 0) return .{ .champion = id, .legacy = legacy };
+            // The client's 3-second bench animations are local UI cooldowns.
+            // Submit as soon as the session exposes a candidate; LCU decides
+            // whether the swap is accepted, including any server restrictions.
+            if (id == available and current > 0) return .{ .champion = id };
         }
         // Card-based ARAM: only our active, unfinished pick and the API's pickable list.
         if (std.mem.indexOfScalar(i32, pickable, id) != null) {
             for (items(get(session, "actions"))) |group| for (items(group)) |action| {
                 if (eql(get(action, "type"), "pick") and integer(get(action, "actorCellId")) == local.integer and yes(get(action, "isInProgress")) and !yes(get(action, "completed"))) {
                     const action_id = get(action, "id");
-                    if (action_id == .integer) return .{ .champion = id, .action = integer(action_id), .legacy = legacy };
+                    if (action_id == .integer) return .{ .champion = id, .action = integer(action_id) };
                 }
             };
         }

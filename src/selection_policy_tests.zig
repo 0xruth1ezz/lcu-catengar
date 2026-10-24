@@ -7,11 +7,17 @@ const a = std.testing.allocator;
 
 // A/B/C are 107/99/22; 1 represents an unrelated champion.
 const Client = struct {
+    const BenchChampion = struct { championId: i32 };
+
     phase: []const u8 = "ChampSelect",
     phase_status: u32 = 200,
     game_id: i64 = 9000000001,
+    queue_id: i32 = 2400,
     current: i32 = 1,
     bench: []const i32 = &.{99},
+    modern_bench: bool = false,
+    legacy: ?bool = null,
+    timer_phase: []const u8 = "FINALIZATION",
     completed_action: bool = true,
     card: bool = false,
     write_status: u32 = 204,
@@ -22,20 +28,28 @@ const Client = struct {
     pub fn request(self: *Client, temp: std.mem.Allocator, method: []const u8, path: []const u8, body: []const u8) !@import("lcu.zig").Response {
         if (std.mem.eql(u8, method, "GET")) {
             if (std.mem.eql(u8, path, "/lol-gameflow/v1/gameflow-phase")) return .{ .status = self.phase_status, .body = try std.json.Stringify.valueAlloc(temp, self.phase, .{}) };
-            if (std.mem.eql(u8, path, "/lol-gameflow/v1/session")) return .{ .status = 200, .body = try std.json.Stringify.valueAlloc(temp, .{ .phase = self.phase, .gameData = .{ .gameId = self.game_id, .queue = .{ .id = 2400 } } }, .{}) };
-            if (std.mem.eql(u8, path, "/lol-champ-select/v1/session")) return .{ .status = 200, .body = try std.json.Stringify.valueAlloc(temp, .{
-                .localPlayerCellId = 0,
-                .myTeam = .{.{ .cellId = 0, .championId = self.current }},
-                .benchEnabled = !self.card,
-                .benchChampionIds = self.bench,
-                .actions = .{.{.{ .id = 8, .actorCellId = 0, .type = "pick", .isInProgress = !self.completed_action, .completed = self.completed_action }}},
-            }, .{}) };
+            if (std.mem.eql(u8, path, "/lol-gameflow/v1/session")) return .{ .status = 200, .body = try std.json.Stringify.valueAlloc(temp, .{ .phase = self.phase, .gameData = .{ .gameId = self.game_id, .queue = .{ .id = self.queue_id } } }, .{}) };
+            if (std.mem.eql(u8, path, "/lol-champ-select/v1/session")) {
+                const bench = try temp.alloc(BenchChampion, self.bench.len);
+                for (self.bench, bench) |id, *entry| entry.* = .{ .championId = id };
+                return .{ .status = 200, .body = try std.json.Stringify.valueAlloc(temp, .{
+                    .localPlayerCellId = 0,
+                    .isLegacyChampSelect = self.legacy,
+                    .myTeam = .{.{ .cellId = 0, .championId = self.current }},
+                    .benchEnabled = !self.card,
+                    .benchChampionIds = self.bench,
+                    .benchChampions = @as(?[]const BenchChampion, if (self.modern_bench) bench else null),
+                    .timer = .{ .phase = self.timer_phase, .adjustedTimeLeftInPhase = 30000 },
+                    .actions = .{.{.{ .id = 8, .actorCellId = 0, .type = "pick", .isInProgress = !self.completed_action, .completed = self.completed_action }}},
+                }, .{}) };
+            }
             if (std.mem.eql(u8, path, "/lol-champ-select/v1/pickable-champion-ids")) {
                 self.pickable_reads += 1;
                 return .{ .status = 200, .body = try std.json.Stringify.valueAlloc(temp, self.bench, .{}) };
             }
         }
         if (std.mem.eql(u8, method, "POST") and std.mem.startsWith(u8, path, "/lol-champ-select/v1/session/bench/swap/")) {
+            try std.testing.expectEqualStrings("", body);
             self.last_champion = try std.fmt.parseInt(i32, path[std.mem.lastIndexOfScalar(u8, path, '/').? + 1 ..], 10);
         } else if (std.mem.eql(u8, method, "PATCH") and std.mem.eql(u8, path, "/lol-champ-select/v1/session/actions/8")) {
             const parsed = try std.json.parseFromSlice(std.json.Value, temp, body, .{});
@@ -47,6 +61,81 @@ const Client = struct {
         return .{ .status = self.write_status, .body = try temp.dupe(u8, "") };
     }
 };
+
+test "new bench candidates submit immediately through the public API in both session variants" {
+    for ([_]i32{ 450, 2400 }) |queue| {
+        for ([_]?bool{ null, true, false }) |legacy| {
+            for ([_]bool{ false, true }) |modern_bench| {
+                var h = try Harness.init(true);
+                defer h.deinit();
+                h.client.queue_id = queue;
+                h.client.legacy = legacy;
+                h.client.modern_bench = modern_bench;
+                h.client.bench = &.{};
+                try h.tick();
+                try std.testing.expectEqual(@as(usize, 0), h.client.writes);
+
+                // The UI starts its local 3-second animation when this update
+                // arrives. Automation must POST on this very first tick.
+                h.client.bench = &.{ 22, 107, 99 };
+                try h.tick();
+                try std.testing.expectEqual(@as(usize, 1), h.client.writes);
+                try std.testing.expectEqual(@as(i32, 107), h.client.last_champion);
+                try std.testing.expectEqual(@as(i32, 107), h.service.pending_pick);
+                try std.testing.expectEqual(@as(usize, 0), h.state.swapped);
+                try std.testing.expectEqual(@as(usize, 0), h.client.pickable_reads);
+
+                try h.tick();
+                try std.testing.expectEqual(@as(usize, 1), h.client.writes);
+                h.client.current = 107;
+                try h.tick();
+                try std.testing.expectEqual(@as(usize, 1), h.state.swapped);
+            }
+        }
+    }
+}
+
+test "modern bench rejection backs off and retries without recording false success" {
+    var h = try Harness.init(false);
+    defer h.deinit();
+    h.client.legacy = false;
+    h.client.modern_bench = true;
+    h.client.write_status = 409;
+    try h.tick();
+    try std.testing.expectEqual(@as(usize, 1), h.client.writes);
+    try std.testing.expectEqual(@as(i32, 0), h.service.pending_pick);
+    try std.testing.expect(!h.state.pick_completed);
+    try std.testing.expectEqual(@as(usize, 0), h.state.swapped);
+    try std.testing.expectEqual(@as(u8, 1), h.gate.attempts);
+    try std.testing.expect(h.gate.next_ms > 0);
+    try std.testing.expect(!h.gate.allowed(99, h.gate.next_ms - 1));
+    h.gate.next_ms = std.math.maxInt(u64); // Keep the next tick inside backoff deterministically.
+    try h.tick();
+    try std.testing.expectEqual(@as(usize, 1), h.client.writes);
+
+    h.gate.next_ms = 0; // Advance past the retry deadline without sleeping.
+    h.client.write_status = 204;
+    try h.tick();
+    try std.testing.expectEqual(@as(usize, 2), h.client.writes);
+    try std.testing.expect(!h.state.pick_completed);
+    h.client.current = 99;
+    try h.tick();
+    try std.testing.expect(h.state.pick_completed);
+    try std.testing.expectEqual(@as(usize, 1), h.state.swapped);
+}
+
+test "modern card pick also uses the public action endpoint" {
+    var h = try Harness.init(false);
+    defer h.deinit();
+    h.client.legacy = false;
+    h.client.card = true;
+    h.client.completed_action = false;
+    h.client.current = 0;
+    h.client.timer_phase = "BAN_PICK";
+    try h.confirmB();
+    try std.testing.expectEqual(@as(usize, 1), h.client.writes);
+    try std.testing.expectEqual(@as(usize, 1), h.client.pickable_reads);
+}
 
 const Harness = struct {
     service: *Service,

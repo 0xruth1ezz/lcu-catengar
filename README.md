@@ -76,10 +76,11 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Test
 - 自动接受：仅在 `ReadyCheck`、`state=InProgress`、自己的 `playerResponse=None` 时提交接受请求。已接受或拒绝的不重复提交。
 - 自动选人：只处理队列 450（ARAM）、2400（Mayhem），或客户端明确返回 `ARAM` / `ARAM_MAYHEM` 的队列。未知模式默认不执行。
 - 优先从可用替补池交换，兼容 `benchChampionIds` 和 `benchChampions` 两种会话结构。只有比当前英雄排名更高的英雄才会被选中；当前英雄没有出现在优先列表时，列表中的任何可用英雄都可成为候选。
+- 替补英雄出现后直接调用 `POST /lol-champ-select/v1/session/bench/swap/{championId}`，不等待客户端界面的 3 秒交换／新英雄冷却动画。是否接受由 LCU 决定；服务端拒绝仍按退避规则重试，只有会话确认归属才记为成功。新旧会话都使用此公开接口，不根据 `isLegacyChampSelect` 改写到 team-builder 路径。
 - 勾选「总是按照优先顺序选取英雄」时，已选中英雄或完成选取后仍继续检查更高优先级的替补。例如顺序为 A、B、C，持有 B 时可升级到 A；持有 A 时即使只有 B、C 可用，也保留 A。
 - 取消勾选时，仅在本应用提交的选取经 LCU 确认归属后停止本轮自动选人。手动持有优先英雄、请求返回 HTTP 204、失败或超时都不会单独完成本轮；未确认的请求按原有规则重试。
 - 本次应用运行中，本轮已停止的状态在断线重连、切换主题、修改优先列表或关闭再打开总开关后保留；重新勾选策略可恢复持续优选。确认离开 `ChampSelect`，或观察到有效的正数 64 位 `gameData.gameId` 改变后，下一轮重新开始。该完成状态只保留在内存中。
-- 对提供卡片选择的会话，仅在自己的未完成 `pick` action 正在进行，且目标出现在 LCU `pickable-champion-ids` 中时提交选择。根据 `isLegacyChampSelect` 使用对应接口前缀。
+- 对提供卡片选择的会话，仅在自己的未完成 `pick` action 正在进行，且目标出现在 LCU `pickable-champion-ids` 中时提交选择，统一调用 `PATCH /lol-champ-select/v1/session/actions/{actionId}`。
 - 成功请求后等待 WebSocket 会话事件确认英雄归属。3 秒未收到确认时补读一次状态。交换竞争、接口拒绝和短暂错误会退避重试，不假定抢选必定成功。
 - 主要通过 **WSS / WAMP 事件订阅**实时获取游戏阶段、对局信息、接受状态、选人会话及可选英雄 ID。事件到达后唤醒工作线程；开启自动接受时，每 1 秒补查游戏阶段，处于 `ReadyCheck` 时每 500 ms 补查接受状态（另计请求耗时），防止先开工具、后开客户端时事件缺失或接口暂未就绪导致漏接。补查不会覆盖期间到达的新事件，同一轮成功接受后不会重复提交。关闭自动接受时，阶段检查恢复为每 15 秒一次；REST 还用于首次连接、阶段切换缺失数据补齐、断线恢复、静态资源和 POST/PATCH 写操作。
 - WebSocket 不可用时临时降级为 REST（选人 250 ms、接受 500 ms、空闲 1 秒，加上请求耗时），每 10 秒尝试恢复 WebSocket；界面显示当前通信方式。匹配确认和选人期间暂停可选的图片下载。

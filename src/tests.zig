@@ -381,7 +381,7 @@ test "never downgrade an existing better champion or invent an unavailable one" 
     p.add(999);
     try testing.expect(l.choose(&p, 450, "", session.value, &.{}) == null);
 }
-test "modern bench honors availability and team-builder routing" {
+test "modern bench honors explicit availability" {
     const s = try parse(
         \\{"localPlayerCellId":3,"myTeam":[{"cellId":3,"championId":22}],"benchEnabled":true,"isLegacyChampSelect":false,"benchChampions":[{"championId":107,"isAvailable":false},{"championId":99,"isAvailable":true}]}
     );
@@ -389,7 +389,7 @@ test "modern bench honors availability and team-builder routing" {
     var p = preferences();
     const choice = l.choose(&p, 2400, "", s.value, &.{}).?;
     try testing.expectEqual(@as(i32, 99), choice.champion);
-    try testing.expect(!choice.legacy);
+    try testing.expectEqual(@as(?i32, null), choice.action);
 }
 test "spectator malformed and absent-local sessions cannot trigger writes" {
     var p = preferences();

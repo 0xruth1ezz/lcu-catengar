@@ -528,7 +528,9 @@ pub const Service = struct {
         const choice = logic.choose(&p, state.queue_id, mode, session.value, pickable[0..pickable_count]) orelse return;
         if (!gate.allowed(choice.champion, win.now())) return;
         if (!std.meta.eql(self.prefs(), p)) return;
-        const prefix = if (choice.legacy) "/lol-champ-select/v1/session" else "/lol-lobby-team-builder/champ-select/v1/session";
+        // Match the client's public write endpoints for both legacy and modern
+        // sessions. isLegacyChampSelect does not select the REST API namespace.
+        const prefix = "/lol-champ-select/v1/session";
         const path = if (choice.action) |id| try std.fmt.allocPrint(temp, "{s}/actions/{d}", .{ prefix, id }) else try std.fmt.allocPrint(temp, "{s}/bench/swap/{d}", .{ prefix, choice.champion });
         const body = if (choice.action != null) try std.fmt.allocPrint(temp, "{{\"championId\":{d},\"completed\":true}}", .{choice.champion}) else "";
         self.pick_audit.attempt(choice.champion);
