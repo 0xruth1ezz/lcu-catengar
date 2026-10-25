@@ -74,7 +74,35 @@ pub const Profile = struct {
     icon_path: Text(768) = .{},
 };
 
-pub const LogKind = enum { app, connection, accept, pick };
+pub const TeamSide = enum {
+    unknown,
+    blue,
+    red,
+
+    pub fn title(self: TeamSide) []const u8 {
+        return switch (self) {
+            .blue => "本局 · 蓝色方",
+            .red => "本局 · 红色方",
+            .unknown => "阵营未确认",
+        };
+    }
+    pub fn message(self: TeamSide) []const u8 {
+        return switch (self) {
+            .blue => "本局我方为蓝色方。",
+            .red => "本局我方为红色方。",
+            .unknown => "",
+        };
+    }
+    pub fn chatMessage(self: TeamSide) []const u8 {
+        return switch (self) {
+            .blue => "🟦 本局我方为蓝色方 - by (Catengar)",
+            .red => "🟥 本局我方为红色方 - by (Catengar)",
+            .unknown => "",
+        };
+    }
+};
+
+pub const LogKind = enum { app, connection, accept, pick, side };
 pub const LogLevel = enum { info, success, warning, failure };
 pub const LogEntry = struct {
     timestamp: Text(32) = .{},
@@ -96,6 +124,7 @@ pub const LogEntry = struct {
             .connection => "连接",
             .accept => "接受对局",
             .pick => "自动选取",
+            .side => "阵营提示",
         };
     }
     pub fn levelLabel(self: *const LogEntry) []const u8 {
@@ -139,6 +168,8 @@ pub const Snapshot = struct {
     accepted: usize = 0,
     swapped: usize = 0,
     last_pick_name: Text(96) = .{},
+    side_notices: usize = 0,
+    last_team_side: TeamSide = .unknown,
     logs: [10]LogEntry = @splat(.{}),
     log_count: usize = 0,
     log_sink: ?LogSink = null,

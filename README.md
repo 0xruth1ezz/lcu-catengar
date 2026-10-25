@@ -45,6 +45,8 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Test
 
 自动接受或抢英雄成功后，会在桌面右下角显示应用绘制的提示窗，沿用当前主题，约 4.5 秒后消失，也可点击关闭。它不使用系统通知，不会在弹出时抢焦点；主窗口隐藏到托盘后仍会显示。连续成功的提示依次展示，普通状态刷新不会重复弹出；抢英雄必须等客户端确认后才提示。
 
+进入选英雄大厅后，客户端确认本人阵营时，会自动向**选人队伍聊天**发送「🟦 本局我方为蓝色方 - by (Catengar)」或「🟥 本局我方为红色方 - by (Catengar)」，同时在右下角浮窗显示对应文字和蓝／红色图标。此功能独立于自动接受、自动选人开关，支持大乱斗、海克斯大乱斗及常规红蓝方模式；观战、竞技场和未知阵营不会误报。阵营数据或聊天房间尚未就绪时每秒补查，明确拒绝的发送最多尝试 5 次；发送中断且结果未知时停止本局重发，避免重复消息。聊天失败不影响浮窗或自动选人，结果可在「日志」中查看「阵营提示」记录。同一次应用运行中，每轮成功发送和浮窗提示各一次，断线重连不重复；离开选人、有效对局 ID 改变或选人聊天室改变后，下一轮重新提示。
+
 应用文件、窗口、任务栏和托盘使用 `assets/catengar-icon.png` 中的猫科图标，透明边缘保持不变。`assets/catengar.ico` 包含 16–256 px 的 9 种尺寸并内嵌在 exe 中；托盘所需的文件自动释放到本地数据目录，图标无需单独分发。从其他工作目录启动也能找到图标。更换源图后运行 `powershell -File scripts/build-icon.ps1` 重新生成 ICO，再构建应用；CI 直接使用已提交的 ICO，无需额外图片工具。
 
 主窗口使用 macOS 风格的自绘标题栏，中间的 Catengar 名称旁显示嵌入 ICO 中的现有猫科 logo，无需额外图片文件：左侧红色按钮收进托盘，黄色按钮最小化，绿色按钮最大化或还原。空白标题栏可拖动、双击最大化/还原；保留系统边缘缩放和任务栏操作，Windows 11 使用系统圆角与阴影。标题栏随当前主题即时变化，三个按钮支持键盘焦点。托盘与任务栏继续使用猫科图标。
@@ -143,6 +145,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Diagnose
 - `src/champion_detail.native` / `src/champion_details.zig`：英雄详情浮窗、唯一的 haidou.pro Tab 与网页状态；打开详情时创建 WebView，禁用原生桥接。
 - `src/portrait_worker.zig` / `src/catalog.zig`：有界后台头像解码队列、目录内容标识和重连缓存复用。
 - `src/toasts.zig` / `src/toast.native`：成功提示去重、排队、定时关闭与自绘提示窗。
+- `src/team_side.zig` / `src/team_side_tests.zig`：选人阵营识别、队伍聊天发送、每轮去重与离线回归测试。
 - `src/auth.zig`：认证监视、权限助手启动策略与重连身份管理。
 - `src/auth_helper.zig` / `src/auth_discovery.zig`：独立管理员助手与固定的只读命令行查询。
 - `src/auth_broker.zig` / `src/auth_protocol.zig`：受限本机命名管道、双向进程身份校验和有界认证消息。

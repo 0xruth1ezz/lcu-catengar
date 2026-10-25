@@ -4,17 +4,19 @@ const t = @import("types.zig");
 pub const duration_ms = 4500;
 pub const Message = struct {
     is_update: bool = false,
+    side: t.TeamSide = .unknown,
     title: t.Text(48) = .{},
     body: t.Text(160) = .{},
 };
 
-/// Snapshot counters survive connection changes. Only a NEW successful
-/// action enters the queue; routine WS updates never re-show a toast.
+/// Snapshot counters survive connection changes. Only a newly confirmed
+/// action or side enters the queue; routine WS updates never re-show a toast.
 pub const State = struct {
     messages: [4]Message = @splat(.{}),
     count: usize = 0,
     accepted: usize = 0,
     swapped: usize = 0,
+    side_notices: usize = 0,
     deadline: u64 = 0,
 
     pub fn updateAvailable(self: *State, version: []const u8, now: u64) void {
@@ -27,6 +29,12 @@ pub const State = struct {
     }
 
     pub fn observe(self: *State, snapshot: *const t.Snapshot, now: u64) void {
+        if (snapshot.side_notices > self.side_notices and snapshot.last_team_side != .unknown) self.push(.{
+            .side = snapshot.last_team_side,
+            .title = t.Text(48).init(snapshot.last_team_side.title()),
+            .body = t.Text(160).init(snapshot.last_team_side.message()),
+        }, now);
+        self.side_notices = snapshot.side_notices;
         if (snapshot.accepted > self.accepted) self.push(.{
             .title = t.Text(48).init("自动接受成功"),
             .body = t.Text(160).init("已接受对局，等待其他玩家确认。"),

@@ -5,6 +5,7 @@ test {
     _ = @import("selection_policy_tests.zig");
     _ = @import("auto_accept_tests.zig");
     _ = @import("priority_cache_tests.zig");
+    _ = @import("team_side_tests.zig");
 }
 
 test "cancelled helper launches stay quiet until the user explicitly retries" {
@@ -759,7 +760,7 @@ test "HTTP competition failure is not counted as a swap" {
     try testing.expect(std.mem.indexOf(u8, state.logs[0].message.text(), "HTTP 409") != null);
 }
 
-test "ranked session is gated before champion selection endpoints" {
+test "ranked session can read its side but never submits champion selection" {
     const service = try a.create(@import("service.zig").Service);
     defer a.destroy(service);
     service.* = .{};
@@ -770,6 +771,7 @@ test "ranked session is gated before champion selection endpoints" {
     var client: Mock = .{ .steps = &.{
         .{ .method = "GET", .path = "/lol-gameflow/v1/gameflow-phase", .body = "\"ChampSelect\"" },
         .{ .method = "GET", .path = "/lol-gameflow/v1/session", .body = "{\"gameData\":{\"queue\":{\"id\":420,\"gameMode\":\"CLASSIC\"}}}" },
+        .{ .method = "GET", .path = "/lol-champ-select/v1/session", .body = "{}" },
     } };
     var gate: l.RetryGate = .{};
     var accept: l.RetryGate = .{};

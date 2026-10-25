@@ -8,6 +8,7 @@ const win = @import("windows.zig");
 const events = @import("events.zig");
 const profile = @import("profile.zig");
 const priority_cache = @import("priority_cache.zig");
+const team_side = @import("team_side.zig");
 const a = std.heap.page_allocator;
 
 pub const Service = struct {
@@ -27,6 +28,7 @@ pub const Service = struct {
     pending_until: u64 = 0,
     pending_resynced: bool = false,
     pick_game_id: i64 = 0,
+    side_notice: team_side.Notice = .{},
     pick_audit: @import("pick_audit.zig").Audit = .{},
     cached_priorities: priority_cache.Cache = .{},
     next_priority_save: u64 = 0,
@@ -332,6 +334,7 @@ pub const Service = struct {
                     s.cache.sync(temp, &client.?, true) catch |err| break :blk err;
                     phase_version = version;
                 }
+                reconciler.selection(temp, &client.?, &s.cache, self.side_notice.needs_selection_sync, win.now()) catch |err| break :blk err;
                 if (self.pending_pick != 0 and !self.pending_resynced and win.now() >= self.pending_until) {
                     // Recover once if a successful write's confirmation event was lost.
                     s.cache.sync(temp, &client.?, false) catch |err| break :blk err;
@@ -406,6 +409,7 @@ pub const Service = struct {
         }
     }
     fn resetPickRound(self: *Service, state: *t.Snapshot, gate: *logic.RetryGate) void {
+        self.side_notice = .{};
         state.pick_completed = false;
         self.pick_game_id = 0;
         self.pending_pick = 0;
@@ -414,6 +418,12 @@ pub const Service = struct {
         gate.* = .{};
     }
     pub fn tick(self: *Service, temp: std.mem.Allocator, client: anytype, state: *t.Snapshot, gate: *logic.RetryGate, accept_gate: *logic.RetryGate) !void {
+        self.side_notice.ready = false;
+        try self.tickGame(temp, client, state, gate, accept_gate);
+        // Champion selection gets priority over optional chat I/O.
+        try self.side_notice.send(temp, client, state, win.now());
+    }
+    fn tickGame(self: *Service, temp: std.mem.Allocator, client: anytype, state: *t.Snapshot, gate: *logic.RetryGate, accept_gate: *logic.RetryGate) !void {
         const phase_response = try lcu.requestAuthenticated(client, temp, "GET", "/lol-gameflow/v1/gameflow-phase", "");
         if (!phase_response.ok()) return error.PhaseUnavailable;
         const phase_json = try phase_response.json(temp);
@@ -479,11 +489,17 @@ pub const Service = struct {
         state.queue_id = logic.integer(logic.get(queue, "id"));
         const mode = logic.str(logic.get(queue, "gameMode"));
         state.pick_supported = logic.isAram(state.queue_id, mode);
-        if (!state.pick_supported.?) return;
+        const side_supported = team_side.supported(game.value);
+        self.side_notice.needs_selection_sync = side_supported and self.side_notice.side == .unknown;
+        if (!state.pick_supported.? and !side_supported) return;
         const response = try lcu.requestAuthenticated(client, temp, "GET", "/lol-champ-select/v1/session", "");
         if (!response.ok()) return;
         const session = try response.json(temp);
         defer session.deinit();
+        const selection_id = logic.get(session.value, "gameId");
+        if (game_id == .integer and game_id.integer > 0 and selection_id == .integer and selection_id.integer > 0 and game_id.integer != selection_id.integer) return;
+        if (side_supported) self.side_notice.observe(session.value, state);
+        if (!state.pick_supported.?) return;
         state.current = logic.ownChampion(session.value);
         state.bench_count = logic.benchIds(session.value, &state.bench);
         var p = self.prefs();

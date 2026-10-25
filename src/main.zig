@@ -90,7 +90,14 @@ pub const Model = struct {
         return self.toasts.messages[0].body.text();
     }
     pub fn toastIcon(self: *const Model) []const u8 {
+        if (self.toasts.messages[0].side != .unknown) return "info";
         return if (self.toasts.messages[0].is_update) "download" else "check-circle";
+    }
+    pub fn blueToast(self: *const Model) bool {
+        return self.toasts.messages[0].side == .blue;
+    }
+    pub fn redToast(self: *const Model) bool {
+        return self.toasts.messages[0].side == .red;
     }
     pub fn canInstallUpdate(self: *const Model) bool {
         return updater.canInstall(&self.snapshot);
@@ -342,6 +349,7 @@ pub const Msg = union(enum) {
     toast_timer: native.EffectTimer,
     dismiss_toast,
     preview_toasts,
+    preview_side: t.TeamSide,
     preview_connection,
     copy_profile,
     profile_copy_timer: native.EffectTimer,
@@ -677,6 +685,12 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
             observeToasts(model, fx);
             fx.hideWindow("main");
         },
+        .preview_side => |side| if (preview_catalog.len > 0) {
+            model.snapshot.last_team_side = side;
+            model.snapshot.side_notices += 1;
+            observeToasts(model, fx);
+            fx.hideWindow("main");
+        },
         .reconnect => {
             service.reconnect.store(true, .release);
             model.ui_error.set("");
@@ -913,6 +927,7 @@ fn tokens(model: *const Model) canvas.DesignTokens {
     theme.colors.accent = color(p.accent);
     theme.colors.accent_text = color(p.accent_text);
     theme.colors.success = color(p.success);
+    theme.colors.info = color(if (p.dark) 0x60a5fa else 0x1d4ed8);
     theme.colors.warning = color(p.warning);
     theme.colors.destructive = color(p.danger);
     theme.colors.disabled = color(p.subtle);
@@ -937,6 +952,8 @@ fn command(name: []const u8) ?Msg {
     if (std.mem.eql(u8, name, "catengar.show")) return .show_window;
     if (std.mem.eql(u8, name, "catengar.quit")) return .quit;
     if (preview_catalog.len > 0 and std.mem.eql(u8, name, "catengar.preview-toasts")) return .preview_toasts;
+    if (preview_catalog.len > 0 and std.mem.eql(u8, name, "catengar.preview-side-blue")) return .{ .preview_side = .blue };
+    if (preview_catalog.len > 0 and std.mem.eql(u8, name, "catengar.preview-side-red")) return .{ .preview_side = .red };
     if (preview_catalog.len > 0 and std.mem.eql(u8, name, "catengar.preview-connection")) return .preview_connection;
     if (preview_catalog.len > 0 and std.mem.eql(u8, name, "catengar.preview-logs")) return .preview_logs;
     return null;

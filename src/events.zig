@@ -159,6 +159,20 @@ pub const Cache = struct {
 pub const Reconciler = struct {
     next_health: u64 = 0,
     next_ready: u64 = 0,
+    next_selection: u64 = 0,
+
+    /// Entry snapshots can be 404 before the local team is assigned. Repair
+    /// those until the notice has enough data, then leave selection event-driven.
+    pub fn selection(self: *Reconciler, temp: std.mem.Allocator, rest: anytype, cache: *Cache, pending: bool, now: u64) !void {
+        if (!pending or !cache.isPhase("ChampSelect")) {
+            self.next_selection = 0;
+            return;
+        }
+        if (now < self.next_selection) return;
+        self.next_selection = now + 1000;
+        try cache.refresh(temp, rest, .game);
+        try cache.refresh(temp, rest, .selection);
+    }
 
     pub fn update(self: *Reconciler, temp: std.mem.Allocator, rest: anytype, cache: *Cache, auto_accept: bool, now: u64) !void {
         const interval: u64 = if (auto_accept) 1000 else 15000;
@@ -281,7 +295,12 @@ pub fn CachedClientFor(comptime Rest: type) type {
                     self.revision = self.cache.generation;
                     self.cache.mutex.unlock();
                 }
-                const i = Cache.index(path) orelse return error.UnsubscribedResource;
+                const i = Cache.index(path) orelse {
+                    // Chat discovery is deliberately uncached: an empty list
+                    // during entry must be retried even without a chat event.
+                    if (std.mem.eql(u8, path, @import("team_side.zig").conversations_path)) return self.rest.request(allocator, method, path, body);
+                    return error.UnsubscribedResource;
+                };
                 return self.cache.read(allocator, i);
             }
             self.cache.mutex.lock();
