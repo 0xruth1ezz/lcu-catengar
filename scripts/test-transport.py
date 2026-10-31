@@ -14,6 +14,8 @@ import ssl
 import subprocess
 import sys
 import threading
+import time
+import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -27,9 +29,26 @@ class Fixture(http.server.ThreadingHTTPServer):
         self.streams = []
         self.lock = threading.Lock()
         self.writes = 0
+        self.early_side = False
+        self.selection = False
+        self.selected_champion = 22
+        self.countdown = 30000
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(ROOT / "scripts/fixtures/loopback.pem")
         self.socket = context.wrap_socket(self.socket, server_side=True)
+
+    def selection_session(self):
+        return {"gameId": 9, "localPlayerCellId": 0,
+                "myTeam": [{"cellId": 0, "championId": self.selected_champion}],
+                "benchChampions": [{"championId": 107}], "actions": [],
+                "timer": {"phase": "PLANNING", "adjustedTimeLeftInPhase": self.countdown}}
+
+    def event(self, path, data):
+        message = json.dumps([8, "OnJsonApiEvent", {"uri": path, "eventType": "Update", "data": data}]).encode()
+        frame = bytes([0x81, 126]) + len(message).to_bytes(2, "big") + message
+        with self.lock:
+            for stream in self.streams:
+                stream.sendall(frame)
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -47,7 +66,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def reply(self, status, value):
-        body = json.dumps(value).encode()
+        body = b"" if status == 204 else json.dumps(value).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -56,7 +75,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.server.writes += 1
-        self.reply(500, None)
+        raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        body = json.loads(raw) if raw else None
+        if self.server.selection and self.path == "/lol-lobby-team-builder/champ-select/v1/session/bench/swap/107":
+            self.server.selected_champion = 107
+            self.reply(204, None)
+        elif (self.server.early_side
+                and urllib.parse.unquote(self.path) == "/lol-chat/v1/conversations/fixture-room@lol-champ-select.pvp.net/messages"
+                and body == {"body": "🟥 本局我方为红色方 - by (Catengar)", "type": "chat"}):
+            self.reply(200, None)
+        else:
+            self.reply(500, None)
 
     def do_GET(self):
         self.request_count += 1
@@ -108,7 +137,45 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         self.server.streams.remove(self.connection)
                 self.close_connection = True
             return
-        if self.path == "/fixture/subset":
+        if self.path == "/fixture/selection":
+            self.server.selection = True
+            self.server.event("/lol-gameflow/v1/gameflow-phase", "ChampSelect")
+            self.reply(200, None)
+        elif self.path == "/lol-gameflow/v1/session" and (self.server.selection or self.server.early_side):
+            self.reply(200, {"phase": "ChampSelect", "gameData": {"gameId": 9, "queue": {"id": 2400, "gameMode": "KIWI"}}})
+        elif self.path == "/lol-lobby-team-builder/champ-select/v1/session" and self.server.selection:
+            self.reply(200, self.server.selection_session())
+        elif self.path == "/lol-lobby-team-builder/champ-select/v1/subset-champion-list" and self.server.selection:
+            # Every optional REST read races with a countdown update. This used
+            # to cancel every pick despite unchanged ownership and candidates.
+            self.server.countdown -= 100
+            self.server.event("/lol-lobby-team-builder/champ-select/v1/session", self.server.selection_session())
+            time.sleep(0.1)
+            self.reply(404, None)
+        elif self.path == "/fixture/early-side":
+            self.server.selection = False
+            self.server.early_side = True
+            payload = json.loads((ROOT / "tests/fixtures/team-side-early-red.json").read_text(encoding="utf-8"))
+            # Preserve the actual ordering: server team data can arrive before phase.
+            events = [
+                ("/riot-messaging-service/v1/message/teambuilder/v1/tbdGameDtoV1", payload),
+                ("/lol-gameflow/v1/gameflow-phase", "ChampSelect"),
+                ("/lol-gameflow/v1/session", {"phase": "ChampSelect", "gameData": {"gameId": 9, "queue": {"id": 2400, "gameMode": "KIWI"}}}),
+            ]
+            with self.server.lock:
+                for path, data in events:
+                    message = json.dumps([8, "OnJsonApiEvent", {"uri": path, "eventType": "Update", "data": data}]).encode()
+                    frame = bytes([0x81, 126]) + len(message).to_bytes(2, "big") + message
+                    for stream in self.server.streams:
+                        stream.sendall(frame)
+            self.reply(200, None)
+        elif self.path == "/fixture/lobby":
+            self.server.early_side = False
+            self.server.selection = False
+            self.reply(200, None)
+        elif self.path == "/lol-chat/v1/conversations" and self.server.early_side:
+            self.reply(200, [{"id": "fixture-room@lol-champ-select.pvp.net", "type": "championSelect"}])
+        elif self.path == "/fixture/subset":
             message = json.dumps([8, "OnJsonApiEvent", {
                 "uri": "/lol-lobby-team-builder/champ-select/v1/subset-champion-list",
                 "eventType": "Update", "data": [107, 103]
@@ -141,7 +208,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.server.token = "fixture-two"
             self.reply(200, None)
         elif self.path == "/lol-gameflow/v1/gameflow-phase":
-            self.reply(200, "Lobby")
+            self.reply(200, "ChampSelect" if self.server.early_side or self.server.selection else "Lobby")
         else:
             self.reply(404, None)
 
@@ -155,8 +222,8 @@ def main():
         environment = dict(os.environ, CATENGAR_TRANSPORT_PORTS=",".join(str(s.server_port) for s in servers))
         result = subprocess.run([str(cargo), "test", "--locked", "--test", "transport", "--", "--ignored"],
                                 cwd=ROOT, env=environment, timeout=180)
-        if any(server.writes for server in servers):
-            raise AssertionError("expired credentials must block writes")
+        if [server.writes for server in servers] != [2, 0]:
+            raise AssertionError("exactly one champion swap and one early team-side message are expected; expired credentials must block writes")
         return result.returncode
     finally:
         for server in servers:

@@ -3,7 +3,11 @@ use crate::{
     journal::Entry,
     model::*,
     notifications::Notice,
-    transport::{Api, CONVERSATIONS, GAME, PHASE, PICKABLE, READY, SESSION, SUBSET},
+    team_side::early_selection,
+    transport::{
+        Api, CONVERSATIONS, GAME, PHASE, PICKABLE, READY, Response, SESSION, SUBSET, TEAM_PICKABLE,
+        TEAM_SESSION, TEAMBUILDER,
+    },
 };
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
@@ -57,6 +61,8 @@ struct Side {
     next: u64,
     next_discovery: u64,
     chat_revision: u64,
+    waiting_logged: bool,
+    room_waiting_logged: bool,
 }
 #[derive(Default)]
 pub struct Engine {
@@ -65,7 +71,11 @@ pub struct Engine {
     pending: Vec<PendingPick>,
     next_pick_refresh: u64,
     pick_rate_limit_until: u64,
+    pick_state: String,
     accept_done: bool,
+    ready_state: String,
+    observed_current: Option<i32>,
+    observed_bench: Option<Vec<i32>>,
     pick_retry: HashMap<Selection, u64>,
     accept_retry: Retry,
     audit: BTreeMap<i32, Audit>,
@@ -96,12 +106,21 @@ impl Engine {
     fn log(&mut self, kind: &str, level: &str, msg: impl Into<String>) {
         self.logs.push(Entry::new(kind, level, msg));
     }
+    fn selection_state(&mut self, message: String) {
+        if self.pick_state != message {
+            self.log("pick", "info", &message);
+            self.pick_state = message;
+        }
+    }
     pub fn disconnected(&mut self, s: &Snapshot) {
         self.finish(s, true);
         self.pending.clear();
         self.pick_retry.clear();
         self.next_pick_refresh = 0;
         self.pick_rate_limit_until = 0;
+        self.observed_current = None;
+        self.observed_bench = None;
+        self.ready_state.clear();
     }
     fn finish(&mut self, s: &Snapshot, interrupted: bool) {
         let audit = std::mem::take(&mut self.audit);
@@ -145,6 +164,9 @@ impl Engine {
         self.pick_retry.clear();
         self.next_pick_refresh = 0;
         self.pick_rate_limit_until = 0;
+        self.pick_state.clear();
+        self.observed_current = None;
+        self.observed_bench = None;
     }
     pub fn pending_due(&self, now: u64) -> bool {
         self.pending.iter().any(|p| now >= p.next_check)
@@ -208,11 +230,19 @@ impl Engine {
         ) {
             bail!("UnknownPhase");
         }
+        if s.phase != phase {
+            self.log(
+                "connection",
+                "info",
+                format!("对局阶段：{}。", phase_label(phase)),
+            );
+        }
         s.phase = phase.into();
         s.connected = true;
         if phase != "ReadyCheck" {
             self.accept_done = false;
             self.accept_retry = Retry::default();
+            self.ready_state.clear();
         }
         if phase != "ChampSelect" {
             *control.lock().unwrap() = RoundPick::default();
@@ -225,10 +255,21 @@ impl Engine {
             s.pick_completed = false;
         }
         if phase == "ReadyCheck" {
+            let ready = api.get(READY, false)?;
+            let ready_state = format!(
+                "对局确认状态：HTTP {}，state={}，本机响应={}，自动接受={}。",
+                ready.status,
+                ready.data["state"].as_str().unwrap_or("未知"),
+                ready.data["playerResponse"].as_str().unwrap_or("未知"),
+                prefs().auto_accept
+            );
+            if self.ready_state != ready_state {
+                self.log("client", "info", &ready_state);
+                self.ready_state = ready_state;
+            }
             if self.accept_done || !prefs().auto_accept {
                 return Ok(());
             }
-            let ready = api.get(READY, false)?;
             if ready.ok()
                 && should_accept(prefs().auto_accept, phase, &ready.data)
                 && self.accept_retry.allowed(1, now)
@@ -240,12 +281,24 @@ impl Engine {
                 else {
                     return Ok(());
                 };
-                if let Some(result) = api.write(
+                self.log("accept", "info", "准备提交自动接受对局请求。");
+                let result = match api.write(
                     "POST",
                     "/lol-matchmaking/v1/ready-check/accept",
                     None,
                     revision,
-                )? {
+                ) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        self.log(
+                            "accept",
+                            "failure",
+                            "自动接受请求中断，结果未确认，将重新获取客户端状态。",
+                        );
+                        return Err(error);
+                    }
+                };
+                if let Some(result) = result {
                     self.accept_retry.record(now, result.ok());
                     if result.ok() {
                         self.accept_done = true;
@@ -262,6 +315,12 @@ impl Engine {
                             ),
                         );
                     }
+                } else {
+                    self.log(
+                        "accept",
+                        "info",
+                        "自动接受请求已取消：客户端状态在提交前发生变化。",
+                    );
                 }
             }
             return Ok(());
@@ -269,9 +328,19 @@ impl Engine {
         if phase != "ChampSelect" {
             return Ok(());
         }
-        let game = api.get(GAME, false)?;
+        // Reconcile gameflow independently of team-side discovery. A missed
+        // event or cached loading response must not disable the whole round.
+        let refresh_selection = now >= self.next_pick_refresh;
+        if refresh_selection {
+            self.next_pick_refresh = now + 250;
+        }
+        let game = api.get(GAME, refresh_selection)?;
         if !game.ok() {
             control.lock().unwrap().available = false;
+            self.selection_state(format!(
+                "已进入选人，等待对局信息（HTTP {}）。",
+                game.status
+            ));
             return Ok(());
         }
         if game.data["phase"]
@@ -279,6 +348,7 @@ impl Engine {
             .is_some_and(|v| v != "ChampSelect")
         {
             control.lock().unwrap().available = false;
+            self.selection_state("已进入选人，等待对局信息同步。".into());
             return Ok(());
         }
         let game_id = game.data["gameData"]["gameId"]
@@ -289,6 +359,16 @@ impl Engine {
             if self.game_id > 0 && game_id != self.game_id {
                 self.finish(s, false);
                 self.reset_round();
+            }
+            if self.game_id != game_id {
+                self.log(
+                    "client",
+                    "info",
+                    format!(
+                        "进入选人对局：gameId={game_id}，队列={}。",
+                        game.data["gameData"]["queue"]["id"]
+                    ),
+                );
             }
             self.game_id = game_id;
         }
@@ -306,25 +386,38 @@ impl Engine {
         let side_supported = side_supported(&game.data);
         if !supported {
             control.lock().unwrap().available = false;
+            self.selection_state(format!(
+                "当前队列 {}（{}）不支持自动抢英雄。",
+                s.queue, mode
+            ));
         }
         if !supported && !side_supported {
             return Ok(());
         }
+        // The server's team-builder event already contains the local side when
+        // the room opens. The legacy session can stay incomplete until game start.
+        // Read this before the legacy session and its pick-specific validation.
+        let early_side = if side_supported && self.side_pending() {
+            self.early_side(api, game_id, now)?
+        } else {
+            false
+        };
         let p = prefs();
         // Keep observing the selection lifecycle while the local switch is off.
-        let refresh_selection = supported && now >= self.next_pick_refresh;
-        let refresh_pick = refresh_selection
+        let refresh_pick = supported
+            && refresh_selection
             && p.auto_pick
             && !p.priority.is_empty()
             && (p.always_prioritize || !self.completed);
         let refresh_session = refresh_selection || self.pending_due(now);
-        let session = api.get(SESSION, refresh_session)?;
+        let (session_path, session) = selection_session(api, refresh_session, game_id)?;
         if !session.ok() {
             control.lock().unwrap().available = false;
+            self.selection_state(format!(
+                "选人接口尚未就绪（HTTP {}），正在重试。",
+                session.status
+            ));
             return Ok(());
-        }
-        if refresh_selection {
-            self.next_pick_refresh = now + 250;
         }
         if refresh_session {
             for pending in &mut self.pending {
@@ -337,6 +430,7 @@ impl Engine {
             .unwrap_or(0);
         if game_id > 0 && selected_game > 0 && game_id != selected_game {
             control.lock().unwrap().available = false;
+            self.selection_state("选人数据仍属于上一局，等待当前对局同步。".into());
             return Ok(());
         }
         {
@@ -346,14 +440,53 @@ impl Engine {
             }
             round.available = supported && champion_changes_open(&session.data);
         }
-        if side_supported {
+        if supported {
+            let p = prefs();
+            self.selection_state(if !champion_changes_open(&session.data) {
+                if session.data["timer"]["phase"] == "GAME_STARTING" {
+                    "客户端已进入游戏启动阶段，本局自动抢英雄结束。".into()
+                } else {
+                    "选人数据尚未提供本机玩家，或当前正在观战。".into()
+                }
+            } else if !p.auto_pick {
+                "选人已就绪，自动抢英雄已关闭；可用悬浮按钮为本局开启。".into()
+            } else if p.priority.is_empty() {
+                "自动抢英雄已开启，但优先列表为空。".into()
+            } else if !p.always_prioritize && self.completed {
+                "本局已完成一次自动抢取；可用悬浮按钮恢复。".into()
+            } else {
+                format!(
+                    "自动抢英雄正在监听 {} 个优先英雄（{}）。",
+                    p.priority.len(),
+                    if session_path == SESSION {
+                        "标准选人接口"
+                    } else {
+                        "team-builder 选人接口"
+                    }
+                )
+            });
+        }
+        if side_supported && !early_side {
             self.observe_side(&session.data);
             // Notify and send as soon as matchmaking enters champion select;
             // pickable reads and automatic picks must not hold up this notice.
-            self.send_side(api, now)?;
+            self.send_side(api, now, false)?;
+            if self.side.side == 0 && !self.side.waiting_logged {
+                self.side.waiting_logged = true;
+                self.log("side", "info", "已进入选人，等待客户端提供本局阵营数据。");
+            }
         }
         if supported {
-            self.pick(api, &prefs, s, now, &session.data, &game.data, refresh_pick)?;
+            self.pick(
+                api,
+                &prefs,
+                s,
+                now,
+                &session.data,
+                &game.data,
+                refresh_pick,
+                session_path,
+            )?;
         }
         Ok(())
     }
@@ -367,10 +500,52 @@ impl Engine {
         session: &Value,
         game: &Value,
         refresh: bool,
+        session_path: &str,
     ) -> Result<()> {
         let mode = game["gameData"]["queue"]["gameMode"].as_str().unwrap_or("");
         s.current = own_champion(session);
         s.bench = bench_ids(session);
+        if self.observed_current != Some(s.current) {
+            let previous = self
+                .observed_current
+                .map(|id| format!("{}（{}）", s.name(id), id))
+                .unwrap_or_else(|| "未记录".into());
+            let source = if self
+                .pending
+                .iter()
+                .any(|pending| pending.champion == s.current)
+            {
+                "匹配自动抢取请求"
+            } else {
+                "未匹配本程序自动请求，可能来自玩家操作或客户端分配"
+            };
+            self.log(
+                "client",
+                "info",
+                format!(
+                    "本机英雄变化：{previous} → {}（{}）；{source}，gameId={}。",
+                    s.name(s.current),
+                    s.current,
+                    self.game_id
+                ),
+            );
+            self.observed_current = Some(s.current);
+        }
+        let mut bench = s.bench.clone();
+        bench.sort_unstable();
+        if self.observed_bench.as_ref() != Some(&bench) {
+            self.log(
+                "client",
+                "info",
+                format!(
+                    "可用替补池变化：{:?} → {:?}，gameId={}。",
+                    self.observed_bench.as_deref().unwrap_or_default(),
+                    bench,
+                    self.game_id
+                ),
+            );
+            self.observed_bench = Some(bench);
+        }
         let mut p = prefs();
         self.observe(&p, s, &[]);
         for pending in std::mem::take(&mut self.pending) {
@@ -415,8 +590,13 @@ impl Engine {
         if !p.auto_pick || p.priority.is_empty() || (!p.always_prioritize && self.completed) {
             return Ok(());
         }
+        let pickable_path = if session_path == SESSION {
+            PICKABLE
+        } else {
+            TEAM_PICKABLE
+        };
         let pickable_response = if own_pick_action(session).is_some() {
-            Some(api.get(PICKABLE, refresh)?)
+            Some(api.get(pickable_path, refresh)?)
         } else {
             None
         };
@@ -458,9 +638,9 @@ impl Engine {
                 return Ok(());
             }
             let phase_value = json!("ChampSelect");
-            let mut observed = vec![(PHASE, &phase_value), (GAME, game), (SESSION, session)];
+            let mut observed = vec![(PHASE, &phase_value), (GAME, game), (session_path, session)];
             if choice.action.is_some() && pickable.contains(&choice.champion) {
-                observed.push((PICKABLE, &pickable_response.as_ref().unwrap().data));
+                observed.push((pickable_path, &pickable_response.as_ref().unwrap().data));
             } else if subset.contains(&choice.champion)
                 && (choice.action.is_some() || !s.bench.contains(&choice.champion))
             {
@@ -473,12 +653,23 @@ impl Engine {
             let (method, path, body) = if let Some(action) = choice.action {
                 (
                     "PATCH",
-                    format!("{SESSION}/actions/{action}"),
+                    format!("{session_path}/actions/{action}"),
                     Some(json!({"championId":id,"completed":true})),
                 )
             } else {
-                ("POST", format!("{SESSION}/bench/swap/{id}"), None)
+                ("POST", format!("{session_path}/bench/swap/{id}"), None)
             };
+            self.log(
+                "pick",
+                "info",
+                format!(
+                    "准备抢取 {}（{}）· 顺位 {} · {method} {path} · gameId={}。",
+                    s.name(id),
+                    id,
+                    p.rank(id) + 1,
+                    self.game_id
+                ),
+            );
             let result = match api.write(method, &path, body, revision) {
                 Ok(result) => result,
                 Err(error) => {
@@ -495,18 +686,17 @@ impl Engine {
                 }
             };
             let Some(result) = result else {
+                self.log(
+                    "pick",
+                    "info",
+                    format!(
+                        "{}（{}）的抢取请求已取消：客户端状态在提交前发生变化。",
+                        s.name(id),
+                        id
+                    ),
+                );
                 return Ok(());
             };
-            self.log(
-                "pick",
-                "info",
-                format!(
-                    "尝试抢取 {}（{}）· 顺位 {}。",
-                    s.name(id),
-                    id,
-                    p.rank(id) + 1
-                ),
-            );
             if let Some(e) = self.audit.get_mut(&id) {
                 e.attempted = true;
                 e.unconfirmed = true;
@@ -521,7 +711,12 @@ impl Engine {
                 self.log(
                     "pick",
                     "info",
-                    format!("{}的请求已提交，等待归属确认。", s.name(id)),
+                    format!(
+                        "{}（{}）的请求已提交（HTTP {}），等待归属确认。",
+                        s.name(id),
+                        id,
+                        result.status
+                    ),
                 );
                 break;
             } else {
@@ -562,19 +757,19 @@ impl Engine {
         }
     }
     fn observe_side(&mut self, session: &Value) {
+        let side = own_side(session);
+        if side == 0 {
+            return;
+        }
         let room = room_id(session);
         if room.len() > 256 {
             return;
         }
         if !room.is_empty() {
-            if !self.side.room.is_empty() && room != self.side.room {
+            if !self.side.room.is_empty() && room_key(room) != room_key(&self.side.room) {
                 self.side = Side::default();
             }
             self.side.room = room.into();
-        }
-        let side = own_side(session);
-        if side == 0 {
-            return;
         }
         if self.side.side == 0 {
             self.side.side = side;
@@ -588,7 +783,19 @@ impl Engine {
         }
         self.side.game = session["gameId"].as_i64().unwrap_or(0);
     }
-    fn send_side(&mut self, api: &mut impl Api, now: u64) -> Result<()> {
+    fn early_side(&mut self, api: &mut impl Api, game_id: i64, now: u64) -> Result<bool> {
+        let message = match api.get(TEAMBUILDER, false) {
+            Ok(message) if message.ok() => message,
+            _ => return Ok(false),
+        };
+        let Some(selection) = early_selection(&message.data, game_id) else {
+            return Ok(false);
+        };
+        self.observe_side(&selection);
+        self.send_side(api, now, true)?;
+        Ok(true)
+    }
+    fn send_side(&mut self, api: &mut impl Api, now: u64, early: bool) -> Result<()> {
         if self.side.side == 0 || self.side.finished || now < self.side.next {
             return Ok(());
         }
@@ -623,21 +830,54 @@ impl Engine {
             })
             .collect();
         if rooms.len() != 1 {
+            if !self.side.room_waiting_logged {
+                self.side.room_waiting_logged = true;
+                self.log("side", "info", "阵营已确认，等待当前选人聊天室就绪。");
+            }
             return Ok(());
         }
         let phase = api.get(PHASE, false)?;
         if !phase.ok() || phase.data != "ChampSelect" {
             return Ok(());
         }
-        let session = api.get(SESSION, false)?;
-        if !session.ok()
-            || own_side(&session.data) != self.side.side
-            || room_id(&session.data) != self.side.room
-            || (self.side.game > 0 && session.data["gameId"].as_i64() != Some(self.side.game))
+        let game = api.get(GAME, false)?;
+        if !game.ok()
+            || !side_supported(&game.data)
+            || game.data["phase"]
+                .as_str()
+                .is_some_and(|phase| phase != "ChampSelect")
         {
             return Ok(());
         }
-        let Some(revision) = api.guard(&[(PHASE, &phase.data), (SESSION, &session.data)]) else {
+        let latest_game_id = game.data["gameData"]["gameId"].as_i64().unwrap_or(0);
+        if self.side.game > 0 && latest_game_id > 0 && self.side.game != latest_game_id {
+            return Ok(());
+        }
+        let source = if early { TEAMBUILDER } else { SESSION };
+        let session = api.get(source, false)?;
+        if !session.ok() {
+            return Ok(());
+        }
+        let selected = if early {
+            let game_id = game.data["gameData"]["gameId"].as_i64().unwrap_or(0);
+            let Some(selected) = early_selection(&session.data, game_id) else {
+                return Ok(());
+            };
+            selected
+        } else {
+            session.data.clone()
+        };
+        if own_side(&selected) != self.side.side
+            || room_key(room_id(&selected)) != room_key(&self.side.room)
+            || (self.side.game > 0 && selected["gameId"].as_i64() != Some(self.side.game))
+        {
+            return Ok(());
+        }
+        let Some(revision) = api.guard(&[
+            (PHASE, &phase.data),
+            (GAME, &game.data),
+            (source, &session.data),
+        ]) else {
             return Ok(());
         };
         let path = format!(
@@ -645,6 +885,15 @@ impl Engine {
             percent_encoding::utf8_percent_encode(rooms[0], percent_encoding::NON_ALPHANUMERIC)
         );
         let msg = Notice::TeamSide(self.side.side).message();
+        self.log(
+            "side",
+            "info",
+            format!(
+                "准备发送阵营提示：第 {} 次，gameId={}。",
+                self.side.attempts + 1,
+                self.side.game
+            ),
+        );
         match api.write(
             "POST",
             &path,
@@ -658,13 +907,35 @@ impl Engine {
                     self.side.finished = true;
                     self.log("side", "success", "阵营提示已发送到选人聊天。");
                 } else if self.side.attempts >= 5
-                    || (!matches!(result.status, 404 | 409 | 429) && result.status < 500)
+                    // A newly created client room can initially reject a valid
+                    // message with 400 while chat finishes joining it.
+                    || (!matches!(result.status, 400 | 404 | 409 | 429) && result.status < 500)
                 {
                     self.side.finished = true;
-                    self.log("side", "failure", "阵营消息未能发送，本局已停止重试。");
+                    self.log(
+                        "side",
+                        "failure",
+                        format!(
+                            "阵营消息未能发送（HTTP {}），本局已停止重试。",
+                            result.status
+                        ),
+                    );
+                } else {
+                    self.log(
+                        "side",
+                        "warning",
+                        format!(
+                            "阵营消息发送失败（HTTP {}），将在 1 秒后重试。",
+                            result.status
+                        ),
+                    );
                 }
             }
-            Ok(None) => {}
+            Ok(None) => self.log(
+                "side",
+                "info",
+                "阵营提示请求已取消：客户端状态在提交前发生变化。",
+            ),
             Err(_) => {
                 self.side.finished = true;
                 self.log(
@@ -677,6 +948,43 @@ impl Engine {
         Ok(())
     }
 }
+fn selection_session(
+    api: &mut impl Api,
+    fresh: bool,
+    game_id: i64,
+) -> Result<(&'static str, Response)> {
+    let primary = api.get(SESSION, fresh)?;
+    let current_game = |session: &Value| {
+        let id = session["gameId"].as_i64().unwrap_or(0);
+        game_id == 0 || id == 0 || game_id == id
+    };
+    let usable = |response: &Response| {
+        let session = &response.data;
+        let local = session["localPlayerCellId"].as_i64().filter(|id| *id >= 0);
+        response.ok()
+            && current_game(session)
+            && local.is_some()
+            && session["myTeam"]
+                .as_array()
+                .is_some_and(|team| team.iter().any(|player| player["cellId"].as_i64() == local))
+    };
+    // Never reopen an explicitly closed session using an older alternate copy.
+    if usable(&primary)
+        || (primary.ok()
+            && current_game(&primary.data)
+            && (primary.data["timer"]["phase"] == "GAME_STARTING"
+                || primary.data["isSpectating"] == true))
+    {
+        return Ok((SESSION, primary));
+    }
+    let alternate = api.get(TEAM_SESSION, fresh)?;
+    if usable(&alternate) {
+        Ok((TEAM_SESSION, alternate))
+    } else {
+        Ok((SESSION, primary))
+    }
+}
+
 pub fn side_supported(game: &Value) -> bool {
     let q = &game["gameData"]["queue"];
     let mode = q["gameMode"]

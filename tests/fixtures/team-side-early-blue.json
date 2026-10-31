@@ -1,0 +1,3 @@
+{
+  "payload": "{\"phaseName\":\"CHAMPION_SELECT\",\"gameId\":9,\"queueId\":2400,\"championSelectState\":{\"localPlayerCellId\":4,\"teamId\":\"fixture-room\",\"teamChatRoomId\":\"fixture-room\",\"subphase\":\"BAN_PICK\",\"isSpectating\":false,\"cells\":{\"alliedTeam\":[{\"cellId\":0,\"teamId\":1,\"championId\":0},{\"cellId\":1,\"teamId\":1,\"championId\":0},{\"cellId\":2,\"teamId\":1,\"championId\":0},{\"cellId\":3,\"teamId\":1,\"championId\":0},{\"cellId\":4,\"teamId\":1,\"championId\":0}],\"enemyTeam\":[{\"cellId\":5,\"teamId\":2},{\"cellId\":6,\"teamId\":2},{\"cellId\":7,\"teamId\":2},{\"cellId\":8,\"teamId\":2},{\"cellId\":9,\"teamId\":2}]}}}"
+}

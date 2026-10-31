@@ -2,7 +2,10 @@ use catengar::{
     engine::Engine,
     model::{Preferences, Snapshot},
     notifications::{Notice, NoticeQueue},
-    transport::{Api, CONVERSATIONS, Cache, GAME, PHASE, PICKABLE, READY, Response, SESSION},
+    team_side::early_selection,
+    transport::{
+        Api, CONVERSATIONS, Cache, GAME, PHASE, PICKABLE, READY, Response, SESSION, TEAMBUILDER,
+    },
 };
 use serde_json::{Value, json};
 use std::{
@@ -18,6 +21,7 @@ struct Fixture {
     fail_pick: bool,
     chat_status: u16,
     stale: bool,
+    after_conversations: Option<(String, Value)>,
 }
 impl Fixture {
     fn new(side: u8) -> Self {
@@ -43,6 +47,7 @@ impl Fixture {
             fail_pick: false,
             chat_status: 204,
             stale: false,
+            after_conversations: None,
         }
     }
     fn engine(&self) -> Engine {
@@ -68,14 +73,20 @@ impl Api for Fixture {
         if self.fail_pick && path == PICKABLE {
             anyhow::bail!("pickable read failed");
         }
-        Ok(Response {
+        let response = Response {
             status: if self.values.contains_key(path) {
                 200
             } else {
                 404
             },
             data: self.values.get(path).cloned().unwrap_or(Value::Null),
-        })
+        };
+        if path == CONVERSATIONS
+            && let Some((path, value)) = self.after_conversations.take()
+        {
+            self.values.insert(path, value);
+        }
+        Ok(response)
     }
     fn write(
         &mut self,
@@ -325,4 +336,216 @@ fn conversation_events_wake_notices_without_invalidating_pick_decisions() {
         },
     );
     assert_eq!(cache.chat_revision, before);
+}
+
+fn early_fixture(side: u8) -> Value {
+    serde_json::from_str(if side == 1 {
+        include_str!("fixtures/team-side-early-blue.json")
+    } else {
+        include_str!("fixtures/team-side-early-red.json")
+    })
+    .unwrap()
+}
+
+fn edit_early(message: &mut Value, edit: impl FnOnce(&mut Value)) {
+    let mut payload: Value = serde_json::from_str(message["payload"].as_str().unwrap()).unwrap();
+    edit(&mut payload);
+    message["payload"] = json!(payload.to_string());
+}
+
+fn early_room(f: &mut Fixture, side: u8) {
+    f.values.insert(TEAMBUILDER.into(), early_fixture(side));
+    f.values.insert(
+        CONVERSATIONS.into(),
+        json!([{"id":"fixture-room@lol-champ-select.pvp.net","type":"championSelect"}]),
+    );
+    f.values.get_mut(GAME).unwrap()["gameData"]["queue"] = json!({"id":2400,"gameMode":"KIWI"});
+}
+
+#[test]
+fn recorded_early_team_data_notifies_before_legacy_team_or_champion_exists() {
+    for side in [1, 2] {
+        for legacy in [
+            None,
+            Some(json!({"gameId":8,"localPlayerCellId":0,"myTeam":[]})),
+            Some(
+                json!({"gameId":9,"localPlayerCellId":6,"myTeam":[{"cellId":6,"team":0,"championId":0}]}),
+            ),
+        ] {
+            let mut f = Fixture::new(0);
+            early_room(&mut f, side);
+            if let Some(legacy) = legacy {
+                f.values.insert(SESSION.into(), legacy);
+            } else {
+                f.values.remove(SESSION);
+            }
+            let mut e = f.engine();
+            e.tick(&mut f, &Preferences::default, &mut Snapshot::default(), 0)
+                .unwrap();
+            assert_eq!(
+                f.chats(),
+                [&json!({"body":Notice::TeamSide(side).message(),"type":"chat"})]
+            );
+            let events = f.events.lock().unwrap();
+            let notice = events
+                .iter()
+                .position(|v| v.starts_with("notice:"))
+                .unwrap();
+            let legacy = events
+                .iter()
+                .position(|v| v == &format!("get:{SESSION}"))
+                .unwrap();
+            assert!(
+                notice < legacy,
+                "early side must not wait for the legacy session"
+            );
+        }
+    }
+}
+
+#[test]
+fn legacy_session_catching_up_does_not_repeat_early_side_notice() {
+    let mut f = Fixture::new(0);
+    early_room(&mut f, 2);
+    let mut e = Engine::default();
+    let mut s = Snapshot::default();
+    e.tick(&mut f, &Preferences::default, &mut s, 0).unwrap();
+    for now in [100, 1000, 40000] {
+        e.tick(&mut f, &Preferences::default, &mut s, now).unwrap();
+    }
+    f.values.get_mut(SESSION).unwrap()["myTeam"][0]["team"] = json!(2);
+    f.values.get_mut(SESSION).unwrap()["chatDetails"] =
+        json!({"multiUserChatId":"c1~fixture-room@lol-champ-select.pvp.net"});
+    for now in [45000, 46000] {
+        e.tick(&mut f, &Preferences::default, &mut s, now).unwrap();
+    }
+    assert_eq!(f.chats().len(), 1);
+    assert_eq!(e.notices, [Notice::TeamSide(2)]);
+}
+
+#[test]
+fn early_data_requires_current_game_local_ally_and_explicit_team() {
+    for change in 0..7 {
+        let mut data = early_fixture(2);
+        edit_early(&mut data, |p| match change {
+            0 => p["gameId"] = json!(8),
+            1 => p["phaseName"] = json!("GAME_START"),
+            2 => p["championSelectState"]["isSpectating"] = json!(true),
+            3 => p["championSelectState"]["localPlayerCellId"] = json!(-1),
+            4 => p["championSelectState"]["localPlayerCellId"] = json!(0), // enemy, not us
+            5 => p["championSelectState"]["cells"]["alliedTeam"][1]["teamId"] = json!(200),
+            _ => p["championSelectState"]["teamChatRoomId"] = json!(""),
+        });
+        assert!(
+            early_selection(&data, 9).is_none(),
+            "invalid early data {change}"
+        );
+        let mut f = Fixture::new(0);
+        early_room(&mut f, 2);
+        f.values.insert(TEAMBUILDER.into(), data);
+        let mut e = Engine::default();
+        e.tick(&mut f, &Preferences::default, &mut Snapshot::default(), 0)
+            .unwrap();
+        assert!(f.chats().is_empty() && e.notices.is_empty());
+    }
+    assert!(early_selection(&early_fixture(2), 0).is_none());
+}
+
+#[test]
+fn early_data_supports_encoded_or_decoded_payload_and_snapshot_list() {
+    let encoded = early_fixture(1);
+    let expected = early_selection(&encoded, 9).unwrap();
+    let decoded = json!({"payload":serde_json::from_str::<Value>(encoded["payload"].as_str().unwrap()).unwrap()});
+    assert_eq!(early_selection(&decoded, 9), Some(expected.clone()));
+    assert_eq!(
+        early_selection(&json!([encoded, decoded]), 9),
+        Some(expected)
+    );
+    assert!(early_selection(&json!([early_fixture(1), early_fixture(2)]), 9).is_none());
+}
+
+#[test]
+fn early_side_rechecks_phase_game_and_source_after_room_discovery() {
+    for (path, changed) in [
+        (PHASE, json!("Lobby")),
+        (
+            GAME,
+            json!({"phase":"ChampSelect","gameData":{"gameId":10,"queue":{"id":2400,"gameMode":"KIWI"}}}),
+        ),
+        (TEAMBUILDER, early_fixture(1)),
+    ] {
+        let mut f = Fixture::new(0);
+        early_room(&mut f, 2);
+        f.after_conversations = Some((path.into(), changed));
+        let mut e = Engine::default();
+        e.tick(&mut f, &Preferences::default, &mut Snapshot::default(), 0)
+            .unwrap();
+        assert!(f.chats().is_empty(), "stale source: {path}");
+    }
+}
+
+#[test]
+fn early_event_survives_later_phase_event_and_missing_rest_snapshot() {
+    let mut cache = Cache::default();
+    let event = Response {
+        status: 200,
+        data: early_fixture(2),
+    };
+    cache.apply(TEAMBUILDER, event.clone());
+    cache.apply(
+        PHASE,
+        Response {
+            status: 200,
+            data: json!("ChampSelect"),
+        },
+    );
+    for response in [
+        Response {
+            status: 404,
+            data: Value::Null,
+        },
+        Response {
+            status: 200,
+            data: json!([]),
+        },
+    ] {
+        let result = cache.reconcile(TEAMBUILDER, response, cache.revision);
+        assert_eq!(result, event);
+    }
+    cache.apply(
+        TEAMBUILDER,
+        Response {
+            status: 404,
+            data: Value::Null,
+        },
+    );
+    let deleted = cache.reconcile(
+        TEAMBUILDER,
+        Response {
+            status: 404,
+            data: Value::Null,
+        },
+        cache.revision,
+    );
+    assert_eq!(deleted.status, 404);
+}
+
+#[test]
+fn newly_joined_chat_rejection_is_retried_without_repeating_popup() {
+    let mut f = Fixture::new(0);
+    early_room(&mut f, 2);
+    f.chat_status = 400;
+    let mut e = Engine::default();
+    let mut s = Snapshot::default();
+    e.tick(&mut f, &Preferences::default, &mut s, 0).unwrap();
+    f.chat_status = 200;
+    e.tick(&mut f, &Preferences::default, &mut s, 1000).unwrap();
+    e.tick(&mut f, &Preferences::default, &mut s, 2000).unwrap();
+    assert_eq!(f.chats().len(), 2);
+    assert_eq!(e.notices, [Notice::TeamSide(2)]);
+    assert!(
+        e.logs
+            .iter()
+            .any(|entry| entry.kind == "side" && entry.level == "success")
+    );
 }

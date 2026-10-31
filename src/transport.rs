@@ -20,10 +20,24 @@ pub const GAME: &str = "/lol-gameflow/v1/session";
 pub const READY: &str = "/lol-matchmaking/v1/ready-check";
 pub const SESSION: &str = "/lol-champ-select/v1/session";
 pub const PICKABLE: &str = "/lol-champ-select/v1/pickable-champion-ids";
+pub const TEAM_SESSION: &str = "/lol-lobby-team-builder/champ-select/v1/session";
+pub const TEAM_PICKABLE: &str = "/lol-lobby-team-builder/champ-select/v1/pickable-champion-ids";
 pub const SUBSET: &str = "/lol-lobby-team-builder/champ-select/v1/subset-champion-list";
 pub const PROFILE: &str = "/lol-summoner/v1/current-summoner";
 pub const CONVERSATIONS: &str = "/lol-chat/v1/conversations";
-const SLOTS: [&str; 7] = [PHASE, GAME, READY, SESSION, PICKABLE, SUBSET, PROFILE];
+pub const TEAMBUILDER: &str = "/riot-messaging-service/v1/message/teambuilder/v1/tbdGameDtoV1";
+const SLOTS: [&str; 10] = [
+    PHASE,
+    GAME,
+    READY,
+    SESSION,
+    PICKABLE,
+    SUBSET,
+    PROFILE,
+    TEAMBUILDER,
+    TEAM_SESSION,
+    TEAM_PICKABLE,
+];
 fn conversation_event(path: &str) -> bool {
     path == CONVERSATIONS
         || path
@@ -43,7 +57,7 @@ impl Response {
 }
 pub trait Api {
     fn get(&mut self, path: &str, fresh: bool) -> Result<Response>;
-    /// None means a newer event invalidated the decision before submission.
+    /// Use the token returned by guard. None means that decision is now stale.
     fn write(
         &mut self,
         method: &str,
@@ -65,8 +79,65 @@ pub struct Cache {
     pub chat_revision: u64,
     values: HashMap<String, Response>,
     versions: HashMap<String, u64>,
+    next_guard: u64,
+    write_guard: Option<WriteGuard>,
+}
+struct WriteGuard {
+    token: u64,
+    revision: u64,
+    observed: Vec<(String, Value)>,
+}
+fn decision_data(path: &str, data: &Value) -> Value {
+    if matches!(path, SESSION | TEAM_SESSION) {
+        let mut data = data.clone();
+        if data.is_object() {
+            // Countdown ticks and animation phases do not change API eligibility.
+            // Keep the terminal state, player identity, ownership and candidates.
+            data["timer"] = json!({"closed": data["timer"]["phase"] == "GAME_STARTING"});
+        }
+        data
+    } else if path == GAME {
+        json!({"phase":data["phase"],"gameId":data["gameData"]["gameId"],"queue":data["gameData"]["queue"]})
+    } else {
+        data.clone()
+    }
 }
 impl Cache {
+    pub fn guard(&mut self, observed: &[(&str, &Value)]) -> Option<u64> {
+        let observed: Vec<_> = observed
+            .iter()
+            .map(|(path, data)| ((*path).to_owned(), decision_data(path, data)))
+            .collect();
+        if !self.matches(&observed) {
+            self.write_guard = None;
+            return None;
+        }
+        self.next_guard = self.next_guard.wrapping_add(1);
+        let token = self.next_guard;
+        self.write_guard = Some(WriteGuard {
+            token,
+            revision: self.revision,
+            observed,
+        });
+        Some(token)
+    }
+    fn matches(&self, observed: &[(String, Value)]) -> bool {
+        observed.iter().all(|(path, data)| {
+            self.values
+                .get(path)
+                .is_some_and(|r| r.ok() && decision_data(path, &r.data) == *data)
+        })
+    }
+    pub fn permits(&self, token: u64) -> bool {
+        self.write_guard.as_ref().is_some_and(|guard| {
+            guard.token == token
+                && if guard.observed.is_empty() {
+                    guard.revision == self.revision
+                } else {
+                    self.matches(&guard.observed)
+                }
+        })
+    }
     pub fn apply(&mut self, path: &str, response: Response) {
         if conversation_event(path) {
             // Conversation creation wakes the pending notice without waiting
@@ -79,7 +150,18 @@ impl Cache {
         }
         self.revision = self.revision.wrapping_add(1);
         if path == PHASE && self.values.get(PHASE).map(|v| &v.data) != Some(&response.data) {
-            for slot in [GAME, READY, SESSION, PICKABLE, SUBSET] {
+            self.write_guard = None;
+            // The team-builder message may precede the phase event. Keep it;
+            // early_selection checks its positive game ID against gameflow.
+            for slot in [
+                GAME,
+                READY,
+                SESSION,
+                PICKABLE,
+                SUBSET,
+                TEAM_SESSION,
+                TEAM_PICKABLE,
+            ] {
                 self.values.remove(slot);
                 self.versions.insert(slot.into(), self.revision);
             }
@@ -88,6 +170,24 @@ impl Cache {
         self.values.insert(path.into(), response);
     }
     pub fn reconcile(&mut self, path: &str, response: Response, revision: u64) -> Response {
+        // The optional card-list route can be event-only. A 404/405 REST poll
+        // must not erase its live event; empty successful lists and Delete do.
+        if path == SUBSET
+            && matches!(response.status, 404 | 405)
+            && let Some(event) = self.values.get(path).filter(|event| event.ok())
+        {
+            return event.clone();
+        }
+        // Some client builds expose this only as an event stream. An empty or
+        // unsupported REST read must not erase the event that arrived first.
+        if path == TEAMBUILDER
+            && (!response.ok()
+                || response.data.is_null()
+                || response.data.as_array().is_some_and(Vec::is_empty))
+            && let Some(event) = self.values.get(path).filter(|event| event.ok())
+        {
+            return event.clone();
+        }
         // An unrelated profile/session timer event must not discard a fresh
         // card-list response. A newer update of this resource or phase wins.
         if self.versions.get(path).copied().unwrap_or(0) <= revision {
@@ -103,6 +203,7 @@ impl Cache {
         self.revision = self.revision.wrapping_add(1);
         self.chat_revision = self.chat_revision.wrapping_add(1);
         self.values.clear();
+        self.write_guard = None;
         for slot in SLOTS {
             self.versions.insert(slot.into(), self.revision);
         }
@@ -259,7 +360,7 @@ impl Api for Client {
         if !valid_endpoint(path) {
             bail!("InvalidEndpoint");
         }
-        if self.revision() != revision {
+        if !self.cache.lock().unwrap().permits(revision) {
             return Ok(None);
         }
         let method = reqwest::Method::from_bytes(method.as_bytes())?;
@@ -290,18 +391,14 @@ impl Api for Client {
         self.cache.lock().unwrap().chat_revision
     }
     fn guard(&self, observed: &[(&str, &Value)]) -> Option<u64> {
-        let cache = self.cache.lock().unwrap();
-        if self.websocket.load(Ordering::Acquire)
-            && observed.iter().any(|(path, data)| {
-                cache
-                    .values
-                    .get(*path)
-                    .is_none_or(|r| !r.ok() || &r.data != *data)
+        self.cache
+            .lock()
+            .unwrap()
+            .guard(if self.websocket.load(Ordering::Acquire) {
+                observed
+            } else {
+                &[]
             })
-        {
-            return None;
-        }
-        Some(cache.revision)
     }
 }
 impl Drop for Client {

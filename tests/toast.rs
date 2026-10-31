@@ -117,4 +117,13 @@ fn side_toast_replaces_acceptance_at_bottom_right_while_main_is_hidden() {
     if let Err(error) = driver.join().unwrap() {
         std::panic::resume_unwind(error);
     }
+    let log = std::fs::read_to_string(root.path().join("logs/activity.jsonl")).unwrap();
+    for expected in [
+        "通知已入队",
+        "通知已显示",
+        "被更高优先级通知替换",
+        "通知到时自动关闭",
+    ] {
+        assert!(log.contains(expected), "missing journal event: {expected}");
+    }
 }

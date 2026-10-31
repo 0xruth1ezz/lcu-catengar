@@ -48,6 +48,7 @@ pub fn icon_path() -> &'static PathBuf {
     ICON.get().expect("icon initialized")
 }
 pub fn open_detail(c: Champion) {
+    service::global().action(format!("查看英雄资料：{}（{}）", c.name, c.id));
     *REQUEST.lock().unwrap() = Some(c);
 }
 pub fn detail_champion() -> Champion {
@@ -57,15 +58,25 @@ pub fn toast_message() -> String {
     TOAST.lock().unwrap().clone()
 }
 pub fn open_url(url: &str) {
+    service::global().action(format!("在浏览器打开 {url}"));
     let url = url.to_owned();
     std::thread::spawn(move || unsafe {
-        ShellExecuteW(
+        let result = ShellExecuteW(
             None,
             w!("open"),
             &HSTRING::from(url),
             None,
             None,
             SW_SHOWNORMAL,
+        );
+        service::global().journal.log(
+            "window",
+            if result.0 as isize > 32 {
+                "success"
+            } else {
+                "failure"
+            },
+            format!("浏览器打开请求返回：code={}。", result.0 as isize),
         );
     });
 }
@@ -75,19 +86,63 @@ pub fn reveal_logs() {
         let _ = OleInitialize(None);
         let file = HSTRING::from(path.as_os_str());
         let id = ILCreateFromPathW(&file);
-        if !id.is_null() {
-            let _ = SHOpenFolderAndSelectItems(id, None, 0);
+        let ok = if !id.is_null() {
+            let ok = SHOpenFolderAndSelectItems(id, None, 0).is_ok();
             ILFree(Some(id));
+            ok
         } else {
             let parent = HSTRING::from(path.parent().unwrap().as_os_str());
-            ShellExecuteW(None, w!("open"), &parent, None, None, SW_SHOWNORMAL);
-        }
+            ShellExecuteW(None, w!("open"), &parent, None, None, SW_SHOWNORMAL).0 as isize > 32
+        };
+        service::global().journal.log(
+            "window",
+            if ok { "success" } else { "failure" },
+            if ok {
+                "已打开日志目录。"
+            } else {
+                "打开日志目录失败。"
+            },
+        );
         OleUninitialize();
     });
 }
 const TRAY: u32 = WM_APP + 51;
 const OPEN: usize = 1001;
 const EXIT: usize = 1002;
+fn window_name(kind: usize) -> &'static str {
+    match kind {
+        0 => "主窗口",
+        1 => "英雄资料窗口",
+        2 => "通知窗口",
+        3 => "独立抢英雄按钮",
+        _ => "窗口",
+    }
+}
+unsafe fn log_window(hwnd: HWND, kind: usize, message: &str) {
+    let state = service::global().read();
+    let mut r = RECT::default();
+    let position = if unsafe { GetWindowRect(hwnd, &mut r) }.is_ok() {
+        format!(
+            "位置=({}, {})，尺寸={}×{}",
+            r.left,
+            r.top,
+            r.right - r.left,
+            r.bottom - r.top
+        )
+    } else {
+        "位置未知".into()
+    };
+    service::global().journal.log(
+        "window",
+        "info",
+        format!(
+            "{}：{message}；{position}，阶段={}，对局={}。",
+            window_name(kind),
+            state.snapshot.phase,
+            state.round_pick.game_id
+        ),
+    );
+}
 unsafe fn restore(hwnd: HWND) {
     unsafe {
         let _ = ShowWindow(
@@ -206,8 +261,18 @@ unsafe extern "system" fn host_proc(
         }
         if msg == WM_CLOSE {
             if kind == 3 {
+                service::global().action("请求关闭独立抢英雄按钮；选人期间保持显示");
                 return LRESULT(0); // This control lives for the selection phase.
             }
+            service::global().action(format!(
+                "关闭{}{}",
+                window_name(kind),
+                if kind == 0 {
+                    "，隐藏到托盘继续运行"
+                } else {
+                    ""
+                }
+            ));
             if kind == 0 {
                 save_placement(hwnd, "window.json");
                 let _ = ShowWindow(hwnd, SW_HIDE);
@@ -217,15 +282,29 @@ unsafe extern "system" fn host_proc(
             return LRESULT(0);
         }
         if Some(&msg) == INSTANCE_RESTORE.get() {
+            service::global().action("再次启动应用，恢复已有主窗口");
             restore(hwnd);
             return LRESULT(0);
         }
         if msg == WM_EXITSIZEMOVE && kind == 0 {
+            service::global().action("完成主窗口移动或调整大小");
+            log_window(hwnd, kind, "位置或尺寸已调整");
             save_placement(hwnd, "window.json");
         }
         if kind == 3 && matches!(msg, WM_EXITSIZEMOVE | WM_DISPLAYCHANGE) {
             keep_control_on_screen(hwnd);
             save_placement(hwnd, "pick-control-window.json");
+            log_window(hwnd, kind, "移动结束或显示器变化，已校正按钮位置");
+        }
+        if msg == WM_SHOWWINDOW {
+            log_window(hwnd, kind, if wparam.0 != 0 { "显示" } else { "隐藏" });
+        }
+        if kind == 0 && msg == WM_SIZE {
+            match wparam.0 as u32 {
+                SIZE_MINIMIZED => log_window(hwnd, kind, "已最小化"),
+                SIZE_MAXIMIZED => log_window(hwnd, kind, "已最大化"),
+                _ => {}
+            }
         }
         if kind == 0 && msg == WM_GETMINMAXINFO {
             let info = &mut *(lparam.0 as *mut MINMAXINFO);
@@ -270,8 +349,12 @@ unsafe extern "system" fn host_proc(
         }
         if msg == TRAY {
             match (lparam.0 as u32) & 0xffff {
-                WM_LBUTTONUP | WM_LBUTTONDBLCLK => restore(hwnd),
+                WM_LBUTTONUP | WM_LBUTTONDBLCLK => {
+                    service::global().action("点击托盘图标，打开主窗口");
+                    restore(hwnd);
+                }
                 WM_RBUTTONUP | WM_CONTEXTMENU => {
+                    service::global().action("打开托盘菜单");
                     if let Ok(menu) = CreatePopupMenu() {
                         let _ = AppendMenuW(menu, MF_STRING, OPEN, w!("打开 Catengar"));
                         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
@@ -290,8 +373,10 @@ unsafe extern "system" fn host_proc(
                         )
                         .0 as usize;
                         if selected == OPEN {
+                            service::global().action("托盘菜单：打开 Catengar");
                             restore(hwnd);
                         } else if selected == EXIT {
+                            service::global().action("托盘菜单：完全退出");
                             save_placement(hwnd, "window.json");
                             PostQuitMessage(0);
                         }
@@ -468,6 +553,8 @@ unsafe fn pick_control_pointer(hwnd: HWND, msg: u32, lparam: LPARAM) -> Option<L
                     if drag.moved {
                         keep_control_on_screen(hwnd);
                         save_placement(hwnd, "pick-control-window.json");
+                        service::global().action("拖动独立抢英雄按钮，未切换自动抢英雄开关");
+                        log_window(hwnd, 3, "拖动结束");
                     } else {
                         service::global().toggle_round_pick();
                     }
@@ -475,7 +562,9 @@ unsafe fn pick_control_pointer(hwnd: HWND, msg: u32, lparam: LPARAM) -> Option<L
                 Some(LRESULT(0))
             }
             WM_CAPTURECHANGED | WM_CANCELMODE | WM_DESTROY => {
-                *PICK_DRAG.lock().unwrap() = None;
+                if PICK_DRAG.lock().unwrap().take().is_some() {
+                    log_window(hwnd, 3, "指针操作已取消");
+                }
                 if msg == WM_CANCELMODE {
                     let _ = ReleaseCapture();
                 }
@@ -510,7 +599,19 @@ unsafe fn show_pick_control(main: HWND, root: &std::path::Path) -> Result<Rc<App
             MonitorFromWindow(anchor, MONITOR_DEFAULTTONEAREST),
             &mut info,
         );
-        let scale = GetDpiForWindow(anchor) as f32 / 96.;
+        // The foreground app may be DPI-unaware and report 96 on a scaled
+        // monitor. Move our hidden window onto that monitor before measuring
+        // its own DPI; otherwise the button can be too small for its content.
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            info.rcWork.left,
+            info.rcWork.top,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        let scale = GetDpiForWindow(hwnd) as f32 / 96.;
         let width = (168. * scale) as i32;
         let height = (44. * scale) as i32;
         let _ = SetWindowPos(
@@ -532,6 +633,7 @@ unsafe fn show_pick_control(main: HWND, root: &std::path::Path) -> Result<Rc<App
             std::mem::size_of_val(&round) as u32,
         );
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        log_window(hwnd, 3, "已弹出独立抢英雄按钮（置顶、不抢焦点）");
         Ok(control)
     }
 }
@@ -635,6 +737,7 @@ pub fn run(root: PathBuf, offline: bool) -> Result<()> {
                             pick_control = Some(show_pick_control(hwnd, &root)?);
                         }
                     } else if let Some(control) = pick_control.take() {
+                        log_window(control.hwnd(), 3, "当前不可抢英雄，关闭独立按钮");
                         control.stop();
                         let _ = DestroyWindow(control.hwnd());
                     }
@@ -648,6 +751,7 @@ pub fn run(root: PathBuf, offline: bool) -> Result<()> {
                     }
                     if let Some(c) = REQUEST.lock().unwrap().take() {
                         if let Some(old) = details.take() {
+                            log_window(old.hwnd(), 1, "切换英雄资料，关闭旧窗口");
                             old.stop();
                             let _ = DestroyWindow(old.hwnd());
                         }
@@ -663,6 +767,15 @@ pub fn run(root: PathBuf, offline: bool) -> Result<()> {
                             || !IsWindowVisible(v.hwnd()).as_bool()
                     }) && let Some((v, _)) = toast.take()
                     {
+                        log_window(
+                            v.hwnd(),
+                            2,
+                            if IsWindowVisible(v.hwnd()).as_bool() {
+                                "通知到时自动关闭"
+                            } else {
+                                "通知已由玩家关闭"
+                            },
+                        );
                         v.stop();
                         let _ = DestroyWindow(v.hwnd());
                     }
@@ -673,6 +786,7 @@ pub fn run(root: PathBuf, offline: bool) -> Result<()> {
                         .take(toast.is_some());
                     if let Some(notice) = next_notice {
                         if let Some((old, _)) = toast.take() {
+                            log_window(old.hwnd(), 2, "被更高优先级通知替换");
                             old.stop();
                             let _ = DestroyWindow(old.hwnd());
                         }
@@ -710,6 +824,11 @@ pub fn run(root: PathBuf, offline: bool) -> Result<()> {
                             SWP_NOACTIVATE | SWP_FRAMECHANGED,
                         );
                         let _ = ShowWindow(h, SW_SHOWNOACTIVATE);
+                        service::global().journal.log(
+                            "window",
+                            "info",
+                            format!("通知已显示：{}", notice.message()),
+                        );
                         toast = Some((v, Instant::now()));
                     }
                 }
@@ -722,14 +841,17 @@ pub fn run(root: PathBuf, offline: bool) -> Result<()> {
                 };
                 let _ = Shell_NotifyIconW(NIM_DELETE, &data);
                 if let Some(v) = details {
+                    log_window(v.hwnd(), 1, "应用退出，关闭窗口");
                     v.stop();
                     let _ = DestroyWindow(v.hwnd());
                 }
                 if let Some((v, _)) = toast {
+                    log_window(v.hwnd(), 2, "应用退出，关闭通知");
                     v.stop();
                     let _ = DestroyWindow(v.hwnd());
                 }
                 if let Some(control) = pick_control {
+                    log_window(control.hwnd(), 3, "应用退出，关闭独立按钮");
                     save_placement(control.hwnd(), "pick-control-window.json");
                     control.stop();
                     let _ = DestroyWindow(control.hwnd());
@@ -741,7 +863,14 @@ pub fn run(root: PathBuf, offline: bool) -> Result<()> {
                 Ok(())
             }
         })?;
-    let result = ui.join().map_err(|_| anyhow::anyhow!("UI thread failed"))?;
+    let result = ui
+        .join()
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("UI thread failed")));
+    if let Err(error) = &result {
+        service
+            .journal
+            .log("window", "failure", format!("界面线程已停止：{error}"));
+    }
     service.stop();
     result
 }

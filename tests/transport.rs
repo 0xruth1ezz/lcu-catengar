@@ -1,10 +1,14 @@
 //! Run with scripts/test-transport.py: local TLS/WAMP servers, no League access.
 use catengar::{
     auth::Credentials,
-    transport::{Api, Client, PHASE, SUBSET},
+    engine::Engine,
+    model::{Preferences, RoundPick, Snapshot},
+    notifications::Notice,
+    team_side::early_selection,
+    transport::{Api, Client, GAME, PHASE, SUBSET, TEAMBUILDER},
 };
 use std::{
-    sync::atomic::Ordering,
+    sync::{Mutex, atomic::Ordering},
     thread,
     time::{Duration, Instant},
 };
@@ -55,6 +59,60 @@ fn tls_events_reconnect_rotation_and_bounded_shutdown() {
     assert!(first.guard(&[(SUBSET, &cards.data)]).is_some());
     let observed = serde_json::json!("ChampSelect");
     assert!(first.guard(&[(PHASE, &observed)]).is_none());
+    first.get("/fixture/selection", true).unwrap();
+    wait(|| first.get(PHASE, false).unwrap().data == "ChampSelect", 5);
+    let control = Mutex::new(RoundPick::default());
+    let mut picks = Engine::default();
+    let mut picked = Snapshot::default();
+    let enabled = || Preferences {
+        auto_pick: true,
+        priority: vec![107],
+        ..Default::default()
+    };
+    picks
+        .tick_with_control(&mut first, &enabled, &mut picked, 0, &control)
+        .unwrap();
+    assert!(
+        control.lock().unwrap().available,
+        "fallback session must make the button available"
+    );
+    assert_eq!(
+        picked.swapped, 0,
+        "HTTP success still requires ownership confirmation"
+    );
+    picks
+        .tick_with_control(&mut first, &enabled, &mut picked, 250, &control)
+        .unwrap();
+    assert_eq!(
+        picked.swapped, 1,
+        "countdown events must not starve actual TLS writes"
+    );
+    let revision = first.revision();
+    first.get("/fixture/early-side", true).unwrap();
+    wait(|| first.revision() >= revision + 3, 5);
+    let early = first.get(TEAMBUILDER, true).unwrap(); // REST 404 must not erase the live event
+    assert!(early_selection(&early.data, 9).is_some());
+    assert_eq!(
+        first.get(GAME, false).unwrap().data["gameData"]["gameId"],
+        9
+    );
+    let mut engine = Engine::default();
+    let mut snapshot = Snapshot::default();
+    engine
+        .tick(&mut first, &Preferences::default, &mut snapshot, 0)
+        .unwrap();
+    assert_eq!(engine.notices, [Notice::TeamSide(2)]);
+    assert!(
+        engine
+            .logs
+            .iter()
+            .any(|entry| entry.kind == "side" && entry.level == "success")
+    );
+    engine
+        .tick(&mut first, &Preferences::default, &mut snapshot, 1000)
+        .unwrap();
+    first.get("/fixture/lobby", true).unwrap();
+    assert_eq!(first.get(PHASE, true).unwrap().data, "Lobby");
     assert_eq!(second.get(PHASE, true).unwrap().data, "Lobby");
     first.get("/fixture/drop", true).unwrap();
     wait(|| !first.websocket.load(Ordering::Acquire), 5);

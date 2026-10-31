@@ -18,6 +18,39 @@ fn prefs() -> Preferences {
         ..Default::default()
     }
 }
+
+#[test]
+fn client_changes_are_logged_once_and_distinguish_confirmed_automation() {
+    let mut f = Fake::new(22);
+    f.bench(&[103, 107]);
+    let mut e = Engine::default();
+    let mut s = Snapshot::default();
+    e.tick(&mut f, &Preferences::default, &mut s, 0).unwrap();
+    let count = e.logs.len();
+    f.bench(&[107, 103]); // A reordered pool is not an availability change.
+    e.tick(&mut f, &Preferences::default, &mut s, 100).unwrap();
+    assert_eq!(e.logs.len(), count);
+    f.session()["myTeam"][0]["championId"] = json!(103);
+    e.tick(&mut f, &Preferences::default, &mut s, 200).unwrap();
+    let change = e.logs.last().unwrap();
+    assert_eq!(change.kind, "client");
+    assert!(change.message.contains("可能来自玩家操作或客户端分配"));
+    assert!(change.message.contains("gameId=9"));
+    assert!(f.writes.is_empty());
+    e.tick(&mut f, &prefs, &mut s, 300).unwrap();
+    assert_eq!(s.swapped, 0);
+    f.session()["myTeam"][0]["championId"] = json!(107);
+    e.tick(&mut f, &prefs, &mut s, 400).unwrap();
+    assert_eq!(s.swapped, 1);
+    assert!(
+        e.logs
+            .iter()
+            .any(|entry| entry.kind == "client" && entry.message.contains("；匹配自动抢取请求"))
+    );
+    assert!(e.logs.iter().any(|entry| entry.kind == "pick"
+        && entry.level == "success"
+        && entry.message.contains("已抢到")));
+}
 fn action(active: bool, completed: bool) -> Value {
     json!([[{"id":4,"actorCellId":0,"type":"pick","isInProgress":active,"completed":completed}]])
 }
@@ -124,6 +157,205 @@ fn card_is_requested_during_planning_before_action_becomes_active() {
     f.session()["myTeam"][0]["championId"] = json!(107);
     e.tick(&mut f, &prefs, &mut s, 10).unwrap();
     assert_eq!(s.swapped, 1);
+}
+
+#[test]
+fn stale_gameflow_cannot_hide_the_round_button_or_block_picks() {
+    let mut f = Fake::new(22);
+    f.bench(&[107]);
+    f.fresh_values.insert(GAME.into(), f.values[GAME].clone());
+    f.values.get_mut(GAME).unwrap()["phase"] = json!("Lobby");
+    let control = Mutex::new(RoundPick::default());
+    Engine::default()
+        .tick_with_control(&mut f, &prefs, &mut Snapshot::default(), 0, &control)
+        .unwrap();
+    assert!(control.lock().unwrap().available);
+    assert_eq!(f.writes.len(), 1);
+}
+
+#[test]
+fn team_builder_session_restores_button_and_automation_when_public_session_is_unavailable() {
+    const MODERN: &str = "/lol-lobby-team-builder/champ-select/v1/session";
+    for incomplete in [false, true] {
+        let mut f = Fake::new(22);
+        f.bench(&[107]);
+        let valid = f.values.remove(SESSION).unwrap();
+        f.values.insert(MODERN.into(), valid);
+        if incomplete {
+            f.values
+                .insert(SESSION.into(), json!({"gameId":9,"localPlayerCellId":-1}));
+        }
+        let control = Mutex::new(RoundPick::default());
+        let mut engine = Engine::default();
+        let mut snapshot = Snapshot::default();
+        engine
+            .tick_with_control(&mut f, &prefs, &mut snapshot, 0, &control)
+            .unwrap();
+        assert!(control.lock().unwrap().available);
+        assert_eq!(f.writes.len(), 1);
+        assert_eq!(f.writes[0].1, format!("{MODERN}/bench/swap/107"));
+        f.values.get_mut(MODERN).unwrap()["myTeam"][0]["championId"] = json!(107);
+        engine
+            .tick_with_control(&mut f, &prefs, &mut snapshot, 250, &control)
+            .unwrap();
+        assert_eq!(snapshot.swapped, 1);
+    }
+}
+
+#[test]
+fn unsupported_subset_rest_does_not_erase_a_live_card_event() {
+    let mut c = Cache::default();
+    let event = Response {
+        status: 200,
+        data: json!([107]),
+    };
+    c.apply(SUBSET, event.clone());
+    assert_eq!(
+        c.reconcile(
+            SUBSET,
+            Response {
+                status: 404,
+                data: Value::Null
+            },
+            c.revision
+        ),
+        event
+    );
+    // A successful empty list is authoritative; old cards must not survive it.
+    let empty = Response {
+        status: 200,
+        data: json!([]),
+    };
+    assert_eq!(c.reconcile(SUBSET, empty.clone(), c.revision), empty);
+}
+
+#[test]
+fn write_guard_ignores_countdowns_and_profile_updates_but_rejects_changed_choices() {
+    let mut f = Fake::new(22);
+    f.bench(&[107]);
+    let original = f.values[SESSION].clone();
+    let phase = json!("ChampSelect");
+    let mut c = Cache::default();
+    c.apply(
+        PHASE,
+        Response {
+            status: 200,
+            data: phase.clone(),
+        },
+    );
+    c.apply(
+        SESSION,
+        Response {
+            status: 200,
+            data: original.clone(),
+        },
+    );
+    let mut ticking = original.clone();
+    ticking["timer"]["adjustedTimeLeftInPhase"] = json!(29000);
+    ticking["timer"]["phase"] = json!("FINALIZATION");
+    c.apply(
+        SESSION,
+        Response {
+            status: 200,
+            data: ticking.clone(),
+        },
+    );
+    let token = c
+        .guard(&[(PHASE, &phase), (SESSION, &original)])
+        .expect("countdown must not block submission");
+    ticking["timer"]["adjustedTimeLeftInPhase"] = json!(28000);
+    c.apply(
+        SESSION,
+        Response {
+            status: 200,
+            data: ticking.clone(),
+        },
+    );
+    c.apply(
+        PROFILE,
+        Response {
+            status: 200,
+            data: json!({"profileIconId":5}),
+        },
+    );
+    assert!(
+        c.permits(token),
+        "unrelated events between guard and write must not cancel the pick"
+    );
+    for change in ["ownership", "bench", "terminal", "game", "phase"] {
+        c.apply(
+            SESSION,
+            Response {
+                status: 200,
+                data: original.clone(),
+            },
+        );
+        let token = c.guard(&[(PHASE, &phase), (SESSION, &original)]).unwrap();
+        let mut changed = original.clone();
+        match change {
+            "ownership" => changed["myTeam"][0]["championId"] = json!(107),
+            "bench" => changed["benchChampions"] = json!([]),
+            "terminal" => changed["timer"]["phase"] = json!("GAME_STARTING"),
+            "game" => changed["gameId"] = json!(10),
+            _ => c.apply(
+                PHASE,
+                Response {
+                    status: 200,
+                    data: json!("Lobby"),
+                },
+            ),
+        }
+        c.apply(
+            SESSION,
+            Response {
+                status: 200,
+                data: changed,
+            },
+        );
+        assert!(!c.permits(token), "stale {change} must cancel the pick");
+    }
+}
+
+#[test]
+fn alternate_session_uses_its_own_action_and_does_not_bypass_pause_or_game_start() {
+    const MODERN: &str = "/lol-lobby-team-builder/champ-select/v1/session";
+    let mut f = Fake::new(0);
+    let session = f.values.remove(SESSION).unwrap();
+    f.values.insert(MODERN.into(), session.clone());
+    f.values.insert(
+        "/lol-lobby-team-builder/champ-select/v1/pickable-champion-ids".into(),
+        json!([107]),
+    );
+    let control = Mutex::new(RoundPick::default());
+    let mut e = Engine::default();
+    let mut s = Snapshot::default();
+    let off = Preferences {
+        auto_pick: false,
+        ..prefs()
+    };
+    e.tick_with_control(&mut f, &|| off.clone(), &mut s, 0, &control)
+        .unwrap();
+    assert!(control.lock().unwrap().available);
+    assert!(f.writes.is_empty());
+    control.lock().unwrap().toggle(&off, false);
+    e.tick_with_control(&mut f, &|| off.clone(), &mut s, 250, &control)
+        .unwrap();
+    assert_eq!(f.writes[0].1, format!("{MODERN}/actions/4"));
+    let mut closed = session;
+    closed["timer"]["phase"] = json!("GAME_STARTING");
+    f.values.insert(SESSION.into(), closed);
+    e.tick_with_control(&mut f, &prefs, &mut s, 500, &control)
+        .unwrap();
+    assert!(!control.lock().unwrap().available);
+    assert_eq!(f.writes.len(), 1);
+    // An incomplete spectator view is authoritative too; an older alternate
+    // player session must never reopen automation for a spectator.
+    f.values
+        .insert(SESSION.into(), json!({"gameId":9,"isSpectating":true}));
+    e.tick_with_control(&mut f, &prefs, &mut s, 750, &control)
+        .unwrap();
+    assert!(!control.lock().unwrap().available);
+    assert_eq!(f.writes.len(), 1);
 }
 
 #[test]

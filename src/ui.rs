@@ -32,6 +32,16 @@ fn button(
     state: Signal<State>,
     action: impl Fn() + 'static,
 ) -> View {
+    let value = value.into_reactive();
+    button_action(value.clone(), value, state, action)
+}
+fn button_action(
+    value: impl IntoReactive<SharedString>,
+    description: impl IntoReactive<SharedString>,
+    state: Signal<State>,
+    action: impl Fn() + 'static,
+) -> View {
+    let description = description.into_reactive();
     view()
         .h(px(CONTROL_HEIGHT))
         .min_h(px(CONTROL_HEIGHT))
@@ -52,7 +62,10 @@ fn button(
         })
         .active(|s| s.opacity(0.65))
         .disabled_style(|s| s.opacity(0.35).cursor(Cursor::NotAllowed))
-        .on_press(action)
+        .on_press(move || {
+            service::global().action(format!("点击「{}」", description.get()));
+            action();
+        })
         .child(label(value, state).number_of_lines(1))
 }
 fn update(state: Signal<State>, change: impl FnOnce(&mut Preferences)) {
@@ -217,7 +230,10 @@ fn traffic(
                 .outline_offset(px(2.))
                 .outline_color(move || rgb(palette(state).accent))
         })
-        .on_press(action)
+        .on_press(move || {
+            service::global().action(name);
+            action();
+        })
 }
 #[component]
 pub fn App() -> impl IntoElement {
@@ -227,8 +243,10 @@ pub fn App() -> impl IntoElement {
     let about = signal(false);
     on_key("Escape", move |_| {
         if about.get_untracked() {
+            service::global().action("按 Escape 关闭关于对话框");
             about.set(false);
         } else {
+            service::global().action("按 Escape 返回英雄页");
             page.set(0);
         }
     });
@@ -311,8 +329,14 @@ pub fn App() -> impl IntoElement {
             move || about.get(),
             move || {
                 nsh_base::dialog()
-                    .on_cancel(move || about.set(false))
-                    .on_close(move || about.set(false))
+                    .on_cancel(move || {
+                        service::global().action("取消关于对话框");
+                        about.set(false);
+                    })
+                    .on_close(move || {
+                        service::global().action("关闭关于对话框");
+                        about.set(false);
+                    })
                     .items_center()
                     .justify_center()
                     .bg(rgba(DIALOG_SCRIM))
@@ -376,7 +400,7 @@ fn home(state: Signal<State>, search: Signal<String>) -> View {
                     .child(label("英雄库", state).font_weight(FontWeight::SEMIBOLD).flex_1())
                     .child(muted(move || format!("{} 位英雄", filtered.with(Vec::len)), state)))
                 .child(input().value(move || search.get()).placeholder("搜索英雄名称或英文名").label("搜索英雄")
-                    .on_change(move |v: &str| { search.set(v.to_owned()); list_ref.scroll_to(point(px(0.), px(0.)), false); })
+                    .on_change(move |v: &str| { service::global().action(format!("搜索英雄：{}", v.chars().take(128).collect::<String>())); search.set(v.to_owned()); list_ref.scroll_to(point(px(0.), px(0.)), false); })
                     .h(px(CONTROL_HEIGHT)).min_h(px(CONTROL_HEIGHT)).px(px(SPACE_3)).rounded(px(CONTROL_RADIUS))
                     .border_1().border_color(move || rgb(palette(state).muted))
                     .bg(move || rgb(palette(state).surface)).text_color(move || rgb(palette(state).text))
@@ -474,8 +498,18 @@ fn champion_tile(state: Signal<State>, champion: Memo<Champion>) -> View {
                 .size(px(76.))
                 .child(portrait(state, champion, 76.))
                 .child(
-                    button(
+                    button_action(
                         move || if selected() { "✓" } else { "+" },
+                        move || {
+                            champion.with(|c| {
+                                format!(
+                                    "{}优先英雄 {}（{}）",
+                                    if selected() { "移除" } else { "添加" },
+                                    c.name,
+                                    c.id
+                                )
+                            })
+                        },
                         state,
                         move || update(state, |p| p.toggle(champion.get_untracked().id)),
                     )
@@ -550,27 +584,36 @@ fn priority_row(state: Signal<State>, id: ReadSignal<i32>, rank: ReadSignal<usiz
                 .number_of_lines(1),
         )
         .child(
-            button("↑", state, move || {
-                update(state, |p| p.reorder(id.get_untracked(), true))
-            })
+            button_action(
+                "↑",
+                move || format!("提高英雄 {} 的优先级", id.get_untracked()),
+                state,
+                move || update(state, |p| p.reorder(id.get_untracked(), true)),
+            )
             .w(px(28.))
             .px(px(0.))
             .label("提高优先级")
             .disabled(move || rank.get() == 0),
         )
         .child(
-            button("↓", state, move || {
-                update(state, |p| p.reorder(id.get_untracked(), false))
-            })
+            button_action(
+                "↓",
+                move || format!("降低英雄 {} 的优先级", id.get_untracked()),
+                state,
+                move || update(state, |p| p.reorder(id.get_untracked(), false)),
+            )
             .w(px(28.))
             .px(px(0.))
             .label("降低优先级")
             .disabled(move || state.with(|s| rank.get() + 1 >= s.prefs.priority.len())),
         )
         .child(
-            button("×", state, move || {
-                update(state, |p| p.toggle(id.get_untracked()))
-            })
+            button_action(
+                "×",
+                move || format!("移除优先英雄 {}", id.get_untracked()),
+                state,
+                move || update(state, |p| p.toggle(id.get_untracked())),
+            )
             .w(px(28.))
             .px(px(0.))
             .label("移除优先英雄"),
@@ -605,8 +648,9 @@ fn footer(state: Signal<State>) -> View {
                     .gap(px(10.))
                     .child(portrait(state, profile, 28.))
                     .child(
-                        button(
+                        button_action(
                             move || state.with(|s| s.snapshot.profile.riot_id.clone()),
+                            "复制好友 ID",
                             state,
                             move || {
                                 set_clipboard(state.with(|s| s.snapshot.profile.riot_id.clone()))
@@ -948,7 +992,7 @@ fn logs(state: Signal<State>) -> View {
                         move || page.with(|p| p.entries.is_empty()),
                         move || {
                             muted(
-                                "暂无日志。连接变化、自动接受和选取结果会记录在这里。",
+                                "暂无日志。自动操作、玩家操作、客户端变化和窗口活动会记录在这里。",
                                 state,
                             )
                         },
@@ -990,7 +1034,10 @@ pub fn Details() -> impl IntoElement {
     let loading = signal(true);
     let error = signal(false);
     let generation = signal(0u32);
-    on_key("Escape", move |_| desktop::close_window());
+    on_key("Escape", move |_| {
+        service::global().action("按 Escape 关闭英雄资料");
+        desktop::close_window();
+    });
     view()
         .flex_1()
         .p(px(SPACE_4))
@@ -1035,9 +1082,28 @@ pub fn Details() -> impl IntoElement {
             web_view(url.clone())
                 .element_ref(&page_ref)
                 .flex_1()
-                .on_load_start(move |_: &WebNavigation| loading.set(true))
-                .on_load(move |_: &WebNavigation| loading.set(false))
+                .on_load_start(move |_: &WebNavigation| {
+                    service::global().journal.log(
+                        "window",
+                        "info",
+                        format!("英雄资料开始加载：英雄 {id}。"),
+                    );
+                    loading.set(true);
+                })
+                .on_load(move |_: &WebNavigation| {
+                    service::global().journal.log(
+                        "window",
+                        "success",
+                        format!("英雄资料已加载：英雄 {id}。"),
+                    );
+                    loading.set(false);
+                })
                 .on_error(move |_: &str| {
+                    service::global().journal.log(
+                        "window",
+                        "failure",
+                        format!("英雄资料加载失败：英雄 {id}，请检查网络或 WebView2 Runtime。"),
+                    );
                     error.set(true);
                     loading.set(false);
                 })

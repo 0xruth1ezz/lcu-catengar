@@ -95,6 +95,7 @@ impl Service {
     }
     pub fn toggle_round_pick(&self) {
         let state = self.read();
+        self.action("点击独立按钮：切换本局自动抢英雄");
         if let Some(enabled) = self
             .round_pick
             .lock()
@@ -110,9 +111,39 @@ impl Service {
                     "本局已暂停自动抢英雄；下局恢复原设置。"
                 },
             );
+        } else {
+            self.journal.log(
+                "pick",
+                "warning",
+                "本局开关未变更：当前不允许抢英雄，按钮操作已忽略。",
+            );
         }
     }
+    pub fn action(&self, message: impl AsRef<str>) {
+        let state = self.read();
+        self.journal.log(
+            "user",
+            "info",
+            format!(
+                "玩家操作：{}（阶段={}，对局={}）。",
+                message.as_ref(),
+                state.snapshot.phase,
+                state.round_pick.game_id,
+            ),
+        );
+    }
     pub fn command(&self, c: Command) {
+        self.journal.log(
+            "app",
+            "info",
+            match c {
+                Command::Reconnect => "收到重新连接命令。",
+                Command::Authorize => "收到重试授权命令。",
+                Command::CheckUpdate => "收到检查更新命令。",
+                Command::InstallUpdate => "收到安装更新命令。",
+                Command::Quit => "收到退出命令，正在停止后台服务。",
+            },
+        );
         let _ = self.tx.send(c);
     }
     pub fn configure(&self, mut p: Preferences) {
@@ -123,9 +154,9 @@ impl Service {
                 "accept",
                 "info",
                 if p.auto_accept {
-                    "已开启自动接受对局。"
+                    "玩家已开启自动接受对局。"
                 } else {
-                    "已关闭自动接受对局。"
+                    "玩家已关闭自动接受对局。"
                 },
             );
         }
@@ -136,9 +167,9 @@ impl Service {
                 "pick",
                 "info",
                 if p.auto_pick {
-                    "已开启自动选取英雄。"
+                    "玩家已开启自动选取英雄。"
                 } else {
-                    "已关闭自动选取英雄。"
+                    "玩家已关闭自动选取英雄。"
                 },
             );
         }
@@ -153,10 +184,44 @@ impl Service {
                 },
             );
         }
+        if p.theme != state.prefs.theme {
+            self.journal.log(
+                "user",
+                "info",
+                format!(
+                    "玩家切换主题：{} → {}。",
+                    state.prefs.theme.label(),
+                    p.theme.label()
+                ),
+            );
+        }
+        if p.priority != state.prefs.priority {
+            let describe = |ids: &[i32]| {
+                ids.iter()
+                    .map(|id| format!("{}（{}）", state.snapshot.name(*id), id))
+                    .collect::<Vec<_>>()
+                    .join("、")
+            };
+            self.journal.log(
+                "user",
+                "info",
+                format!(
+                    "玩家修改优先英雄（从高到低）：[{}] → [{}]。",
+                    describe(&state.prefs.priority),
+                    describe(&p.priority)
+                ),
+            );
+        }
         state.prefs = p;
     }
     pub fn notify(&self, notice: impl Into<Notice>) {
-        self.notices.lock().unwrap().push(notice.into());
+        let notice = notice.into();
+        self.journal.log(
+            "window",
+            "info",
+            format!("通知已入队：{}", notice.message()),
+        );
+        self.notices.lock().unwrap().push(notice);
     }
     pub fn stop(&self) {
         self.command(Command::Quit);
@@ -184,8 +249,15 @@ impl Service {
         state.snapshot.styles = styles;
     }
     fn run(self: Arc<Self>, rx: Receiver<Command>, root: PathBuf, offline: bool) {
-        self.journal
-            .log("app", "info", "Catengar 已启动，开始记录本机 LCU 活动。");
+        self.journal.log(
+            "app",
+            "info",
+            format!(
+                "Catengar v{} 已启动（离线预览={}），开始记录本机活动。",
+                crate::VERSION,
+                offline
+            ),
+        );
         let watcher = (!offline).then(Watcher::start);
         let mut client: Option<Client> = None;
         let mut assets: Option<Resources> = None;
@@ -193,6 +265,21 @@ impl Service {
         let mut engine = Engine::with_notifier(move |notice| notifier.notify(notice));
         let start = Instant::now();
         let initial = self.read();
+        self.journal.log(
+            "app",
+            "info",
+            format!(
+                "启动配置：自动接受={}，自动抢英雄={}，持续优选={}，优先英雄={:?}。",
+                initial.prefs.auto_accept,
+                initial.prefs.auto_pick,
+                initial.prefs.always_prioritize,
+                initial.prefs.priority
+            ),
+        );
+        if !initial.snapshot.settings_error.is_empty() {
+            self.journal
+                .log("app", "failure", &initial.snapshot.settings_error);
+        }
         // Preserve an unreadable configuration until the player edits preferences.
         let mut last_saved = (!initial.snapshot.settings_error.is_empty()).then_some(initial.prefs);
         let mut next_save = 0;
@@ -208,6 +295,8 @@ impl Service {
         let mut update_job: Option<Receiver<Result<updater::State>>> = None;
         let mut install_requested = false;
         let mut install_after_download = false;
+        let mut last_identity = "";
+        let mut priority_cache_failed = false;
         loop {
             let now = start.elapsed().as_millis() as u64;
             let state = self.read();
@@ -228,6 +317,9 @@ impl Service {
                         if update_job.is_none() {
                             next_update = now;
                             manual_update = true;
+                        } else {
+                            self.journal
+                                .log("update", "info", "已有更新任务运行，忽略重复检查。");
                         }
                     }
                     Command::InstallUpdate => {
@@ -236,6 +328,12 @@ impl Service {
                             && state.update.available()
                         {
                             install_requested = true;
+                        } else {
+                            self.journal.log(
+                                "update",
+                                "warning",
+                                "暂不能安装更新：任务运行中、对局进行中或无可用版本。",
+                            );
                         }
                     }
                 }
@@ -247,20 +345,40 @@ impl Service {
                 if last_saved.as_ref() != Some(&prefs) {
                     match storage::save_preferences(&root, &prefs) {
                         Ok(()) => {
+                            self.journal.log("app", "success", "偏好设置已保存。");
                             last_saved = Some(prefs.clone());
                             snapshot.settings_error.clear();
                         }
                         Err(_) => {
+                            if snapshot.settings_error
+                                != "设置尚未保存，将自动重试。请检查目录权限。"
+                            {
+                                self.journal.log(
+                                    "app",
+                                    "failure",
+                                    "偏好设置保存失败，将在后台重试。",
+                                );
+                            }
                             snapshot.settings_error =
                                 "设置尚未保存，将自动重试。请检查目录权限。".into()
                         }
                     }
                 }
-                if snapshot.settings_error.is_empty()
-                    && storage::save_priorities(&root, &prefs, &snapshot.champions).is_err()
-                {
-                    self.journal
-                        .log("app", "warning", "优先英雄资料暂未缓存，将自动重试。");
+                if snapshot.settings_error.is_empty() {
+                    let failed =
+                        storage::save_priorities(&root, &prefs, &snapshot.champions).is_err();
+                    if failed != priority_cache_failed {
+                        self.journal.log(
+                            "app",
+                            if failed { "warning" } else { "success" },
+                            if failed {
+                                "优先英雄资料暂未缓存，将自动重试。"
+                            } else {
+                                "优先英雄资料缓存已恢复。"
+                            },
+                        );
+                        priority_cache_failed = failed;
+                    }
                 }
                 next_save = now + 2000;
             }
@@ -290,8 +408,19 @@ impl Service {
                             }
                         }
                         self.state.lock().unwrap().update = update;
+                        let update = self.read().update;
+                        self.journal.log(
+                            "update",
+                            "info",
+                            format!(
+                                "更新任务完成：状态={}，版本={}，{}",
+                                update.status, update.version, update.message
+                            ),
+                        );
                     }
                     Err(_) => {
+                        self.journal
+                            .log("update", "failure", "更新任务失败，请稍后重试。");
                         install_after_download = false;
                         let mut s = self.state.lock().unwrap();
                         s.update.status = "failed".into();
@@ -309,6 +438,11 @@ impl Service {
                         "Prepare"
                     };
                     install_after_download = action == "Prepare";
+                    self.journal.log(
+                        "update",
+                        "info",
+                        format!("开始更新任务：{action}，版本={}。", update.version),
+                    );
                     update_job = Some(updater::start(root.clone(), action, update));
                     self.state.lock().unwrap().update.status = if action == "Install" {
                         "arming"
@@ -317,6 +451,15 @@ impl Service {
                     }
                     .into();
                 } else if now >= next_update && (manual_update || !update.available()) {
+                    self.journal.log(
+                        "update",
+                        "info",
+                        if manual_update {
+                            "开始手动检查更新。"
+                        } else {
+                            "开始自动检查更新。"
+                        },
+                    );
                     manual_update = false;
                     next_update = now + 6 * 60 * 60 * 1000;
                     update_job = Some(updater::start(root.clone(), "Check", update));
@@ -330,6 +473,10 @@ impl Service {
             }
             let watcher = watcher.as_ref().unwrap();
             let (revision, identity) = watcher.identity.lock().unwrap().clone();
+            if identity.label() != last_identity {
+                last_identity = identity.label();
+                self.journal.log("connection", "info", last_identity);
+            }
             let credentials = if let Identity::Ready(c) = &identity {
                 Some(c)
             } else {
@@ -381,6 +528,11 @@ impl Service {
                             last_live = false;
                         }
                         Err(_) => {
+                            self.journal.log(
+                                "connection",
+                                "failure",
+                                "创建 LCU 连接失败，将重新获取认证。",
+                            );
                             next_connect = now + 1000;
                             failed_revision = revision;
                             watcher.refresh.store(true, Ordering::Release);
@@ -409,7 +561,6 @@ impl Service {
                     }
                     if live
                         && snapshot.phase == "ReadyCheck"
-                        && prefs.auto_accept
                         && now >= next_ready
                     {
                         c.get(transport::READY, true)?;
@@ -422,6 +573,8 @@ impl Service {
                     {
                         c.get(transport::GAME, true)?;
                         c.get(transport::SESSION, true)?;
+                        // Optional on older clients; the legacy side source remains available.
+                        let _ = c.get(transport::TEAMBUILDER, true);
                         next_side = now + 250;
                     }
                     let connected = snapshot.connected;
@@ -500,7 +653,7 @@ impl Service {
                 }
             }
             for entry in engine.logs.drain(..) {
-                self.journal.log(&entry.kind, &entry.level, entry.message);
+                self.journal.append(entry);
             }
             if !snapshot.connected {
                 self.round_pick.lock().unwrap().available = false;
@@ -533,7 +686,7 @@ impl Service {
         }
         engine.disconnected(&state.snapshot);
         for e in engine.logs {
-            self.journal.log(&e.kind, &e.level, e.message);
+            self.journal.append(e);
         }
         self.journal
             .log("app", "info", "Catengar 已退出，后台自动功能已停止。");

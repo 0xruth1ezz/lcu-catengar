@@ -33,6 +33,10 @@ impl Entry {
             "accept" => "接受对局",
             "pick" => "自动选取",
             "side" => "阵营提示",
+            "user" => "玩家操作",
+            "client" => "客户端",
+            "window" => "窗口",
+            "update" => "更新",
             _ => "应用",
         }
     }
@@ -70,9 +74,11 @@ impl Journal {
         (journal, handle)
     }
     pub fn log(&self, kind: &str, level: &str, message: impl Into<String>) {
-        let _ = self
-            .tx
-            .send(Command::Append(Entry::new(kind, level, message)));
+        self.append(Entry::new(kind, level, message));
+    }
+    /// Preserve the event time when forwarding entries from another worker.
+    pub fn append(&self, entry: Entry) {
+        let _ = self.tx.send(Command::Append(entry));
     }
     pub fn page(&self, offset: usize) -> Receiver<Page> {
         self.page_at(offset, None)
@@ -134,6 +140,15 @@ fn run(path: PathBuf, rx: Receiver<Command>, error: Arc<Mutex<String>>) {
                     pending.clear();
                     error.lock().unwrap().clear();
                 }
+                pending.push(Entry::new(
+                    "user",
+                    if ok { "success" } else { "failure" },
+                    if ok {
+                        "玩家已清空历史日志。"
+                    } else {
+                        "玩家清空历史日志失败。"
+                    },
+                ));
                 let _ = reply.send(ok);
             }
             Ok(Command::Stop) | Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {

@@ -64,21 +64,11 @@ fn rect(hwnd: HWND) -> RECT {
 fn click(hwnd: HWND) {
     let r = rect(hwnd);
     let (x, y) = ((r.right - r.left) / 2, (r.bottom - r.top) / 2);
-    unsafe {
-        SetCursorPos(r.left + x, r.top + y).unwrap();
-    }
-    thread::sleep(Duration::from_millis(30));
+    // Drive only the isolated window. Global pointer injection can be denied
+    // by the input desktop and would also interfere with the user's mouse.
     unsafe {
         SendMessageW(hwnd, WM_LBUTTONDOWN, Some(WPARAM(1)), Some(point(x, y)));
         SendMessageW(hwnd, WM_LBUTTONUP, Some(WPARAM(0)), Some(point(x, y)));
-    }
-}
-struct RestoreCursor(POINT);
-impl Drop for RestoreCursor {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = SetCursorPos(self.0.x, self.0.y);
-        }
     }
 }
 fn capture(hwnd: HWND, name: &str) {
@@ -121,11 +111,6 @@ fn single_button_toggles_drags_persists_and_hides_without_changing_saved_automat
     let root = tempfile::tempdir().unwrap();
     let driver = thread::spawn(|| {
         let result = std::panic::catch_unwind(|| {
-            let mut cursor = POINT::default();
-            unsafe {
-                GetCursorPos(&mut cursor).unwrap();
-            }
-            let _restore_cursor = RestoreCursor(cursor);
             const TITLE: &str = "Catengar · 本局自动抢英雄";
             wait(
                 || service::SERVICE.get().is_some() && window("Catengar").is_some(),
@@ -192,12 +177,8 @@ fn single_button_toggles_drags_persists_and_hides_without_changing_saved_automat
             }
             // Pointer movement moves the button itself; release must not toggle.
             unsafe {
-                SetCursorPos(start.left + 80, start.top + 20).unwrap();
-            }
-            thread::sleep(Duration::from_millis(30));
-            unsafe {
                 SendMessageW(button, WM_LBUTTONDOWN, Some(WPARAM(1)), Some(point(80, 20)));
-                SetCursorPos(start.left - 40, start.top + 100).unwrap();
+                SendMessageW(button, WM_MOUSEMOVE, Some(WPARAM(1)), Some(point(-40, 100)));
             }
             wait(|| rect(button).left == start.left - 120, 2);
             unsafe {
@@ -249,4 +230,19 @@ fn single_button_toggles_drags_persists_and_hides_without_changing_saved_automat
         std::panic::resume_unwind(error);
     }
     assert!(!storage::load_preferences(root.path()).unwrap().auto_pick);
+    let log = std::fs::read_to_string(root.path().join("logs/activity.jsonl")).unwrap();
+    for expected in [
+        "已弹出独立抢英雄按钮",
+        "点击独立按钮",
+        "本局已开启",
+        "本局已暂停",
+        "拖动独立抢英雄按钮",
+        "拖动结束",
+        "当前不可抢英雄，关闭独立按钮",
+        "玩家切换主题",
+        "玩家修改优先英雄",
+        "Catengar 已退出",
+    ] {
+        assert!(log.contains(expected), "missing journal event: {expected}");
+    }
 }

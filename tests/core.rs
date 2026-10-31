@@ -599,9 +599,71 @@ fn journal_persists_pages_and_clears_without_touching_settings() {
     assert_eq!(frozen.entries[0].message, "event 24");
     assert_eq!(j.page(0).recv().unwrap().total, 46);
     assert!(j.clear().recv().unwrap());
+    let cleared = j.page(0).recv().unwrap();
+    assert_eq!(cleared.total, 1);
+    assert_eq!(cleared.entries[0].kind, "user");
+    assert_eq!(cleared.entries[0].message, "玩家已清空历史日志。");
     j.log("app", "info", "after clear");
-    assert_eq!(j.page(0).recv().unwrap().total, 1);
+    assert_eq!(j.page(0).recv().unwrap().total, 2);
     j.stop();
     h.join().unwrap();
     assert_eq!(storage::load_preferences(temp.path()).unwrap(), prefs());
+}
+
+#[test]
+fn journal_preserves_worker_event_time_and_flushes_on_stop() {
+    use catengar::journal::{Entry, Journal};
+    let temp = tempfile::tempdir().unwrap();
+    let (journal, worker) = Journal::start(temp.path().into());
+    let entry = Entry {
+        timestamp: "2026-10-31 01:02:03.456".into(),
+        ..Entry::new("pick", "success", "worker event")
+    };
+    journal.append(entry.clone());
+    journal.stop();
+    worker.join().unwrap();
+    let saved = std::fs::read_to_string(&journal.path).unwrap();
+    assert_eq!(serde_json::from_str::<Entry>(saved.trim()).unwrap(), entry);
+}
+
+#[test]
+fn ready_response_is_observed_with_automation_off_without_duplicate_logs() {
+    let mut f = Fake::default();
+    f.values.insert(PHASE.into(), json!("ReadyCheck"));
+    f.values.insert(
+        READY.into(),
+        json!({"state":"InProgress","playerResponse":"None"}),
+    );
+    let mut e = Engine::default();
+    let mut s = Snapshot::default();
+    e.tick(&mut f, &Preferences::default, &mut s, 0).unwrap();
+    let count = e.logs.len();
+    e.tick(&mut f, &Preferences::default, &mut s, 100).unwrap();
+    assert_eq!(e.logs.len(), count);
+    f.values.get_mut(READY).unwrap()["playerResponse"] = json!("Accepted");
+    e.tick(&mut f, &Preferences::default, &mut s, 200).unwrap();
+    assert_eq!(e.logs.len(), count + 1);
+    assert!(e.logs.last().unwrap().message.contains("本机响应=Accepted"));
+    assert!(f.writes.is_empty());
+    assert_eq!(s.accepted, 0);
+}
+
+#[test]
+fn interrupted_acceptance_is_logged_without_claiming_success() {
+    let mut f = Fake {
+        fail_write: true,
+        ..Default::default()
+    };
+    f.values.insert(PHASE.into(), json!("ReadyCheck"));
+    f.values.insert(
+        READY.into(),
+        json!({"state":"InProgress","playerResponse":"None"}),
+    );
+    let mut e = Engine::default();
+    assert!(e.tick(&mut f, &prefs, &mut Snapshot::default(), 0).is_err());
+    let entries: Vec<_> = e.logs.iter().filter(|e| e.kind == "accept").collect();
+    assert_eq!(entries.len(), 2);
+    assert!(entries[0].message.contains("准备提交"));
+    assert_eq!(entries[1].level, "failure");
+    assert!(entries[1].message.contains("结果未确认"));
 }
