@@ -2,9 +2,9 @@ param([switch]$BuildOnly, [switch]$Test, [switch]$Preview, [switch]$Debug, [swit
 $ErrorActionPreference = 'Stop'
 if ($Debug -and $Release) { throw 'Choose either -Debug or -Release.' }
 $root = Split-Path $PSScriptRoot -Parent
-. "$PSScriptRoot/bootstrap.ps1"
 Push-Location $root
 try {
+    . "$PSScriptRoot/bootstrap.ps1"
     if ($Test) {
         & $CatengarCargo test --locked --all-targets
         if ($LASTEXITCODE) { throw 'Rust tests failed' }

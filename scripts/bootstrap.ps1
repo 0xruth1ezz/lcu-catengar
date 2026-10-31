@@ -17,7 +17,9 @@ $env:RUST_MIN_STACK = '268435456'
 # Explicit mbx invocation keeps this setup project-scoped, including in shells
 # without mise activation. Rust still comes from rust-toolchain.toml/rustup.
 $mbxVersion = (Select-String -LiteralPath (Join-Path $root 'mise.toml') -Pattern '^mr-boxington = "([^"]+)"$').Matches.Groups[1].Value
-$mbx = Get-Command mbx -CommandType Application -ErrorAction SilentlyContinue
+# The CI action exposes both its target-cache tool and the installed executable.
+# Select the first PATH match, just as direct command invocation does.
+$mbx = Get-Command mbx -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 if (!$mbx -and (Get-Command mise -ErrorAction SilentlyContinue)) {
     $mbxHome = & mise where "mr-boxington@$mbxVersion" 2>$null
     if ($LASTEXITCODE -eq 0 -and $mbxHome) {
@@ -25,7 +27,7 @@ if (!$mbx -and (Get-Command mise -ErrorAction SilentlyContinue)) {
         if (Test-Path -LiteralPath $mbxPath) { $mbx = Get-Command $mbxPath }
     }
 }
-$CatengarCargo = (Get-Command cargo -CommandType Application).Source
+$CatengarCargo = (Get-Command cargo -CommandType Application | Select-Object -First 1).Source
 if ($mbx) {
     if ((& $mbx.Source --version) -ne "mbx $mbxVersion") {
         throw "Expected Mr. Boxington $mbxVersion. Run mise install in the repository, or update mbx on PATH."
