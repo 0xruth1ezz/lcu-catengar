@@ -40,6 +40,11 @@ fn tls_events_reconnect_rotation_and_bounded_shutdown() {
         8,
     );
     wait(|| first.revision() > 1, 5);
+    while first.wake.try_recv().is_ok() {}
+    let chat_revision = first.chat_revision();
+    first.get("/fixture/chat", true).unwrap();
+    wait(|| first.chat_revision() > chat_revision, 5);
+    assert!(first.wake.recv_timeout(Duration::from_secs(1)).is_ok());
     let observed = serde_json::json!("ChampSelect");
     assert!(first.guard(&[(PHASE, &observed)]).is_none());
     assert_eq!(second.get(PHASE, true).unwrap().data, "Lobby");

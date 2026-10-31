@@ -2,7 +2,8 @@
 use crate::{
     journal::Entry,
     model::*,
-    transport::{Api, GAME, PHASE, PICKABLE, READY, SESSION},
+    notifications::Notice,
+    transport::{Api, CONVERSATIONS, GAME, PHASE, PICKABLE, READY, SESSION},
 };
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
@@ -51,6 +52,8 @@ struct Side {
     finished: bool,
     attempts: u8,
     next: u64,
+    next_discovery: u64,
+    chat_revision: u64,
 }
 #[derive(Default)]
 pub struct Engine {
@@ -63,9 +66,23 @@ pub struct Engine {
     audit: BTreeMap<i32, Audit>,
     side: Side,
     pub logs: Vec<Entry>,
-    pub notices: Vec<String>,
+    pub notices: Vec<Notice>,
+    notifier: Option<Box<dyn Fn(Notice) + Send>>,
 }
 impl Engine {
+    pub fn with_notifier(notifier: impl Fn(Notice) + Send + 'static) -> Self {
+        Self {
+            notifier: Some(Box::new(notifier)),
+            ..Self::default()
+        }
+    }
+    fn notify(&mut self, notice: Notice) {
+        if let Some(notifier) = &self.notifier {
+            notifier(notice);
+        } else {
+            self.notices.push(notice);
+        }
+    }
     fn log(&mut self, kind: &str, level: &str, msg: impl Into<String>) {
         self.logs.push(Entry::new(kind, level, msg));
     }
@@ -195,7 +212,7 @@ impl Engine {
                         self.accept_done = true;
                         s.accepted += 1;
                         self.log("accept", "success", "已自动接受对局，等待其他玩家确认。");
-                        self.notices.push("已自动接受对局".into());
+                        self.notify("已自动接受对局".into());
                     } else {
                         self.log(
                             "accept",
@@ -257,12 +274,12 @@ impl Engine {
         }
         if side_supported {
             self.observe_side(&session.data);
+            // Notify and send as soon as matchmaking enters champion select;
+            // pickable reads and automatic picks must not hold up this notice.
+            self.send_side(api, now)?;
         }
         if supported {
             self.pick(api, prefs, s, now, &session.data, &game.data)?;
-        }
-        if side_supported {
-            self.send_side(api, now)?;
         }
         Ok(())
     }
@@ -304,7 +321,7 @@ impl Engine {
                         }
                     ),
                 );
-                self.notices.push(format!("已抢到 {}", s.name(id)));
+                self.notify(format!("已抢到 {}", s.name(id)).into());
                 self.pending = None;
             } else if now < until {
                 return Ok(());
@@ -459,7 +476,7 @@ impl Engine {
                 "本局我方为红色方"
             };
             self.log("side", "info", message);
-            self.notices.push(message.into());
+            self.notify(Notice::TeamSide(side));
         }
         self.side.game = session["gameId"].as_i64().unwrap_or(0);
     }
@@ -467,8 +484,13 @@ impl Engine {
         if self.side.side == 0 || self.side.finished || now < self.side.next {
             return Ok(());
         }
-        self.side.next = now + 1000;
-        let conversations = match api.get("/lol-chat/v1/conversations", true) {
+        let chat_revision = api.chat_revision();
+        if now < self.side.next_discovery && chat_revision == self.side.chat_revision {
+            return Ok(());
+        }
+        self.side.chat_revision = chat_revision;
+        self.side.next_discovery = now + 250;
+        let conversations = match api.get(CONVERSATIONS, true) {
             Ok(v) if v.ok() => v,
             _ => return Ok(()),
         };
@@ -514,11 +536,7 @@ impl Engine {
             "/lol-chat/v1/conversations/{}/messages",
             percent_encoding::utf8_percent_encode(rooms[0], percent_encoding::NON_ALPHANUMERIC)
         );
-        let msg = if self.side.side == 1 {
-            "🟦 本局我方为蓝色方 - by (Catengar)"
-        } else {
-            "🟥 本局我方为红色方 - by (Catengar)"
-        };
+        let msg = Notice::TeamSide(self.side.side).message();
         match api.write(
             "POST",
             &path,
@@ -526,6 +544,7 @@ impl Engine {
             revision,
         ) {
             Ok(Some(result)) => {
+                self.side.next = now + 1000;
                 self.side.attempts += 1;
                 if result.ok() {
                     self.side.finished = true;

@@ -21,7 +21,15 @@ pub const READY: &str = "/lol-matchmaking/v1/ready-check";
 pub const SESSION: &str = "/lol-champ-select/v1/session";
 pub const PICKABLE: &str = "/lol-champ-select/v1/pickable-champion-ids";
 pub const PROFILE: &str = "/lol-summoner/v1/current-summoner";
+pub const CONVERSATIONS: &str = "/lol-chat/v1/conversations";
 const SLOTS: [&str; 6] = [PHASE, GAME, READY, SESSION, PICKABLE, PROFILE];
+fn conversation_event(path: &str) -> bool {
+    path == CONVERSATIONS
+        || path
+            .strip_prefix(CONVERSATIONS)
+            .and_then(|tail| tail.strip_prefix('/'))
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct Response {
     pub status: u16,
@@ -43,6 +51,9 @@ pub trait Api {
         revision: u64,
     ) -> Result<Option<Response>>;
     fn revision(&self) -> u64;
+    fn chat_revision(&self) -> u64 {
+        0
+    }
     fn guard(&self, _observed: &[(&str, &Value)]) -> Option<u64> {
         Some(self.revision())
     }
@@ -50,10 +61,17 @@ pub trait Api {
 #[derive(Default)]
 pub struct Cache {
     pub revision: u64,
+    pub chat_revision: u64,
     values: HashMap<String, Response>,
 }
 impl Cache {
     pub fn apply(&mut self, path: &str, response: Response) {
+        if conversation_event(path) {
+            // Conversation creation wakes the pending notice without waiting
+            // for its REST retry timer. Fetch the list to resolve the current room.
+            self.chat_revision = self.chat_revision.wrapping_add(1);
+            return;
+        }
         if !SLOTS.contains(&path) {
             return;
         }
@@ -77,6 +95,7 @@ impl Cache {
     }
     fn clear(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+        self.chat_revision = self.chat_revision.wrapping_add(1);
         self.values.clear();
     }
 }
@@ -258,6 +277,9 @@ impl Api for Client {
     fn revision(&self) -> u64 {
         self.cache.lock().unwrap().revision
     }
+    fn chat_revision(&self) -> u64 {
+        self.cache.lock().unwrap().chat_revision
+    }
     fn guard(&self, observed: &[(&str, &Value)]) -> Option<u64> {
         let cache = self.cache.lock().unwrap();
         if self.websocket.load(Ordering::Acquire)
@@ -334,7 +356,7 @@ fn stream(
                     let Some(path) = event["uri"].as_str() else {
                         continue;
                     };
-                    if SLOTS.contains(&path) {
+                    if SLOTS.contains(&path) || conversation_event(path) {
                         cache.lock().unwrap().apply(
                             path,
                             Response {

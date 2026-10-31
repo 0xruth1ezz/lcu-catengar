@@ -2,6 +2,7 @@ pub mod auth;
 pub mod engine;
 pub mod journal;
 pub mod model;
+pub mod notifications;
 pub mod platform;
 pub mod service;
 pub mod storage;

@@ -3,6 +3,7 @@ use crate::{
     engine::Engine,
     journal::Journal,
     model::*,
+    notifications::{Notice, NoticeQueue},
     storage,
     transport::{self, Api, Client},
     updater,
@@ -12,7 +13,6 @@ use crossbeam_channel::{Receiver, Sender};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::VecDeque,
     path::PathBuf,
     sync::{
         Arc, Mutex, OnceLock,
@@ -43,7 +43,7 @@ pub enum Command {
 pub struct Service {
     pub state: Arc<Mutex<State>>,
     pub journal: Journal,
-    pub notices: Mutex<VecDeque<String>>,
+    pub notices: Mutex<NoticeQueue>,
     tx: Sender<Command>,
     thread: Mutex<Option<thread::JoinHandle<()>>>,
     journal_thread: Mutex<Option<thread::JoinHandle<()>>>,
@@ -73,7 +73,7 @@ impl Service {
                 update: updater::previous_result(&root),
             })),
             journal,
-            notices: Mutex::new(VecDeque::new()),
+            notices: Mutex::new(NoticeQueue::default()),
             tx,
             thread: Mutex::new(None),
             journal_thread: Mutex::new(Some(journal_thread)),
@@ -128,8 +128,8 @@ impl Service {
         }
         state.prefs = p;
     }
-    pub fn notify(&self, message: impl Into<String>) {
-        self.notices.lock().unwrap().push_back(message.into());
+    pub fn notify(&self, notice: impl Into<Notice>) {
+        self.notices.lock().unwrap().push(notice.into());
     }
     pub fn stop(&self) {
         self.command(Command::Quit);
@@ -162,7 +162,8 @@ impl Service {
         let watcher = (!offline).then(Watcher::start);
         let mut client: Option<Client> = None;
         let mut assets: Option<Resources> = None;
-        let mut engine = Engine::default();
+        let notifier = self.clone();
+        let mut engine = Engine::with_notifier(move |notice| notifier.notify(notice));
         let start = Instant::now();
         let initial = self.read();
         // Preserve an unreadable configuration until the player edits preferences.
@@ -366,7 +367,14 @@ impl Service {
                 let result = (|| -> Result<()> {
                     if live && now >= next_phase {
                         c.get(transport::PHASE, true)?;
-                        next_phase = now + if prefs.auto_accept { 1000 } else { 15000 };
+                        next_phase = now
+                            + if prefs.auto_accept
+                                || matches!(snapshot.phase.as_str(), "Matchmaking" | "ReadyCheck")
+                            {
+                                1000
+                            } else {
+                                15000
+                            };
                     }
                     if live
                         && snapshot.phase == "ReadyCheck"
@@ -383,7 +391,7 @@ impl Service {
                     {
                         c.get(transport::GAME, true)?;
                         c.get(transport::SESSION, true)?;
-                        next_side = now + 1000;
+                        next_side = now + 250;
                     }
                     let connected = snapshot.connected;
                     engine.tick(
@@ -461,9 +469,6 @@ impl Service {
             }
             for entry in engine.logs.drain(..) {
                 self.journal.log(&entry.kind, &entry.level, entry.message);
-            }
-            for notice in engine.notices.drain(..) {
-                self.notify(notice);
             }
             self.publish(&snapshot);
             if let Some(c) = &client {

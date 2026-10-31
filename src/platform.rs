@@ -478,10 +478,17 @@ pub fn run(root: PathBuf, offline: bool) -> Result<()> {
                         v.stop();
                         let _ = DestroyWindow(v.hwnd());
                     }
-                    if toast.is_none()
-                        && let Some(message) = service::global().notices.lock().unwrap().pop_front()
-                    {
-                        *TOAST.lock().unwrap() = message;
+                    let next_notice = service::global()
+                        .notices
+                        .lock()
+                        .unwrap()
+                        .take(toast.is_some());
+                    if let Some(notice) = next_notice {
+                        if let Some((old, _)) = toast.take() {
+                            old.stop();
+                            let _ = DestroyWindow(old.hwnd());
+                        }
+                        *TOAST.lock().unwrap() = notice.message();
                         let v = surface::<crate::ui::Toast>("Catengar · 通知", (360, 140), 2)?;
                         let h = v.hwnd();
                         SetWindowLongPtrW(h, GWL_STYLE, WS_POPUP.0 as isize);
@@ -490,13 +497,19 @@ pub fn run(root: PathBuf, offline: bool) -> Result<()> {
                             GWL_EXSTYLE,
                             (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST).0 as isize,
                         );
-                        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                        let foreground = GetForegroundWindow();
+                        let anchor = if foreground.0.is_null() {
+                            hwnd
+                        } else {
+                            foreground
+                        };
+                        let monitor = MonitorFromWindow(anchor, MONITOR_DEFAULTTONEAREST);
                         let mut info = MONITORINFO {
                             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
                             ..Default::default()
                         };
                         let _ = GetMonitorInfoW(monitor, &mut info);
-                        let scale = GetDpiForWindow(hwnd) as f32 / 96.;
+                        let scale = GetDpiForWindow(anchor) as f32 / 96.;
                         let width = (360. * scale) as i32;
                         let height = (140. * scale) as i32;
                         let _ = SetWindowPos(
