@@ -1,0 +1,56 @@
+name: Verify and build Windows
+description: Shared Rust checks, integration tests and portable release build
+inputs:
+  cache-backend:
+    description: Mr. Boxington backend (github for CI, local for published releases)
+    default: github
+runs:
+  using: composite
+  steps:
+    - name: Install pinned Rust toolchain
+      id: toolchain
+      shell: pwsh
+      run: |
+        $channel = (Select-String -LiteralPath rust-toolchain.toml -Pattern '^channel = "([^"]+)"$').Matches.Groups[1].Value
+        rustup toolchain install $channel --profile minimal --component rustfmt --component clippy --target x86_64-pc-windows-msvc
+        if ($LASTEXITCODE) { throw 'Rust installation failed' }
+        "channel=$channel" >> $env:GITHUB_OUTPUT
+        $mbxVersion = (Select-String -LiteralPath mise.toml -Pattern '^mr-boxington = "([^"]+)"$').Matches.Groups[1].Value
+        "mbx-version=$mbxVersion" >> $env:GITHUB_OUTPUT
+
+    - name: Set up Mr. Boxington
+      uses: jdx/mr-boxington-action@88acf2bb50552c7c508cbac13e5f8c576b95b1de # v1.7.3
+      with:
+        version: ${{ steps.toolchain.outputs.mbx-version }}
+        toolchain: ${{ steps.toolchain.outputs.channel }}
+        backend: ${{ inputs.cache-backend }}
+        github-cache-mode: target
+        cache-generation: catengar-v1
+
+    - name: Formatting and lint
+      shell: pwsh
+      run: |
+        ./scripts/cargo.ps1 fmt --all --check
+        if ($LASTEXITCODE) { throw 'Formatting failed' }
+        ./scripts/cargo.ps1 clippy --locked --all-targets '--' -D warnings
+        if ($LASTEXITCODE) { throw 'Clippy failed' }
+
+    - name: Offline regression tests
+      shell: pwsh
+      run: |
+        ./scripts/run.ps1 -Test
+        python scripts/test-auth-discovery.py
+        if ($LASTEXITCODE) { throw 'Discovery tests failed' }
+
+    - name: Build portable Windows executables
+      shell: pwsh
+      run: ./scripts/run.ps1 -Release -BuildOnly -Timings
+
+    - name: Verify loopback TLS, WebSocket and portable startup
+      shell: pwsh
+      run: |
+        . ./scripts/bootstrap.ps1
+        python scripts/test-transport.py $CatengarCargo
+        if ($LASTEXITCODE) { throw 'Transport tests failed' }
+        python scripts/test-startup.py
+        if ($LASTEXITCODE) { throw 'Startup failed' }

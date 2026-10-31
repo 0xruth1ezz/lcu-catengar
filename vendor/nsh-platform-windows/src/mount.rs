@@ -1,4 +1,4 @@
-// Modified for Catengar: route generic focus and blur through accessibility focus.
+// Modified for Catengar: generic focus/blur and optional shader support.
 //! Applies mount items to the views, in order. Each kind of content has
 //! its module ([`crate::text`], [`crate::image`], [`crate::scroll`],
 //! [`crate::text_input`], [`crate::navigation`], ...); this file only
@@ -213,10 +213,14 @@ impl Mounter {
                         crate::native::resized(view)
                     }
                     ViewKind::Image => {
+                        #[cfg(feature = "shader")]
                         crate::shader::resized(view);
                         crate::image::resized(surface, view);
                     }
-                    _ => crate::shader::resized(view),
+                    _ => {
+                        #[cfg(feature = "shader")]
+                        crate::shader::resized(view);
+                    }
                 }
             }
             MountItem::ViewStyle { id, style } => {
@@ -324,9 +328,16 @@ impl Mounter {
                     crate::canvas::set(surface, view, drawing.clone());
                 }
             }
+            #[cfg(feature = "shader")]
             MountItem::Shader { id, layer } => {
                 if let Some(view) = &self.get(*id) {
                     crate::shader::set(surface, view, layer.clone());
+                }
+            }
+            #[cfg(not(feature = "shader"))]
+            MountItem::Shader { layer, .. } => {
+                if layer.is_some() {
+                    log::warn!("shader views require the nsh-platform-windows/shader feature");
                 }
             }
             MountItem::Gestures { id, values } => {

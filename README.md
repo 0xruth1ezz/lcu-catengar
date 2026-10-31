@@ -10,19 +10,29 @@ NSH 固定到 `a5036af48ddc193b5023ece9b9196c76b8f8d3f5`，依赖由 `Cargo.lock
 
 需要 Windows x64、[Rust / rustup](https://rustup.rs/)、Visual Studio 2022 Build Tools 的 **Desktop development with C++** 工作负载及 Windows SDK。`rust-toolchain.toml` 固定 Rust 1.99.1。详情页需要 Microsoft Edge WebView2 Runtime。
 
+本地构建使用 [Mr. Boxington](https://mr-boxington.jdx.dev/) 共享编译缓存，`mise.toml` 固定版本。安装 [mise](https://mise.jdx.dev/)，在仓库运行 `mise trust`、`mise install` 即可；已有 Rust 工具链继续由 rustup 管理。`run.ps1` 和 `cargo.ps1` 自动查找已安装的 mbx，无需修改全局 Cargo shim、编辑器或 PowerShell 配置。未安装 mbx 时回退到普通 Cargo。
+
 ```powershell
-# 下载锁定依赖，编译并运行
+# 开发构建并运行（默认 debug，使用增量编译）
 ./scripts/run.ps1
-# 仅编译便携版
-./scripts/run.ps1 -BuildOnly
+# 仅编译优化后的便携版
+./scripts/run.ps1 -Release -BuildOnly
 # 调试构建；不连接 League、不检查更新
 $env:CATENGAR_DATA_DIR = Join-Path $PWD '.tools/preview-data'
 ./scripts/run.ps1 -Debug -Preview
 # 只读认证诊断（不会自动请求管理员权限）
 ./scripts/run.ps1 -Diagnose
+# 只做编译检查，不链接 EXE
+./scripts/cargo.ps1 check --locked --all-targets
 ```
 
-输出目录为 `target/x86_64-pc-windows-msvc/release/`。分发时保留 `catengar.exe`、`catengar-auth.exe`、`catengar-diagnose.exe`、`WebView2Loader.dll`、`WebView2-LICENSE.txt` 和本 README。使用者不需要 Rust。`.cargo/config.toml` 固定通用 x64 CPU 和静态 MSVC CRT，避免依赖开发机 CPU 指令或另装 VC Runtime。首次构建需要网络；已缓存依赖后可使用 Cargo 的 `--offline`。
+默认输出为 `target/x86_64-pc-windows-msvc/debug/`，`-Release` 输出为 `target/x86_64-pc-windows-msvc/release/`。`-Debug` 仍可显式选择开发构建。加 `-Timings` 会生成 Cargo HTML 构建耗时报告。Release 保留 `opt-level=3`，使用 16 个 codegen units，关闭跨 crate LTO，减少每次修改后的编译和链接时间。构建不启用未使用的 NSH 自定义 shader 与代码语法高亮，主界面仍使用 Direct2D 原生渲染。
+
+分发时保留 `catengar.exe`、`catengar-auth.exe`、`catengar-diagnose.exe`、`WebView2Loader.dll`、`WebView2-LICENSE.txt` 和本 README。使用者不需要 Rust。`.cargo/config.toml` 固定通用 x64 CPU 和静态 MSVC CRT，避免依赖开发机 CPU 指令或另装 VC Runtime。首次构建需要网络；已缓存依赖后可使用 Cargo 的 `--offline`。开发脚本不再额外运行一次全量 `cargo fetch`；Cargo 按当前构建下载所需依赖。
+
+`.mbx.toml` 保留本地开发的 Cargo 增量编译，依赖由 mbx 缓存；项目脚本默认关闭 managed targets，现有 `target/` 不会被移动。缓存默认位于 `%LOCALAPPDATA%/mbx`，可以设置 `MBX_CACHE_DIR` 改到同一磁盘以便硬链接恢复。`./scripts/cargo.ps1 explain --last` 查看最近一次缓存命中；直接调用 `cargo` 则跳过项目的 mbx 入口。通过 PowerShell 脚本转发编译器或测试参数时，将分隔符写成 `'--'`，例如 `./scripts/cargo.ps1 clippy --locked --all-targets '--' -D warnings`。对比缓存效果时，应使用两个全新的 `--target-dir`，避免把 Cargo 自身的 Fresh 误当成 mbx 命中。
+
+**WebView2 的用途：**只有「查看」打开的 haidou.pro 内嵌英雄详情使用 WebView2 Runtime，首页、设置、日志与自动化不依赖浏览器渲染。当前 MSVC 构建已将 loader 静态链接进 EXE，因此单独的 `WebView2Loader.dll` 不是启动依赖；发布 ZIP 仍保留它，以兼容旧版更新器的六文件清单。启动测试特意不复制该 DLL。静态 loader 不包含浏览器引擎，详情页仍需电脑上安装 WebView2 Runtime。
 
 ## 使用
 
@@ -81,21 +91,23 @@ LCU 请求限制为 `127.0.0.1`，禁用代理与重定向；只为这个本机�
 
 ```powershell
 . ./scripts/bootstrap.ps1
-cargo fmt --all --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked --all-targets
-cargo test --locked -p nsh-platform-windows --lib input::tests::keyboard
+& $CatengarCargo fmt --all --check
+& $CatengarCargo clippy --locked --all-targets -- -D warnings
+& $CatengarCargo test --locked --all-targets
+& $CatengarCargo test --locked -p nsh-platform-windows --lib input::tests::keyboard
 python scripts/test-auth-discovery.py
 powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/test-updater.ps1
 python -B -m unittest discover -s scripts -p test_release.py -v
-python scripts/test-transport.py
-./scripts/run.ps1 -BuildOnly
+python scripts/test-transport.py $CatengarCargo
+./scripts/run.ps1 -Release -BuildOnly
 python scripts/test-startup.py
 ```
 
 TLS/WAMP 测试启动 OS 分配端口的本地假服务器，验证重订阅、连接中断、token 轮换、过期认证禁止写入及关闭时限。测试证书 `scripts/fixtures/loopback.pem` 是公开测试材料。启动测试使用含空格和中文的临时路径、独立离线缓存及关闭的开关；不查询真实 LCU、不请求 UAC。普通 `cargo test` 会将需要 Python 服务器的单项标记为 ignored，`test-transport.py` 显式运行它。
 
 Windows CI 执行格式、Clippy、Rust 及 NSH Windows 后端测试、认证/更新/发布脚本测试、TLS/WAMP、便携程序启动检查并上传构建产物。离线测试不替代真实客户端的 UAC、中文 IME 候选窗、多显示器和对局交互验证。鼠标操作、搜索输入和 Escape 关闭关于窗口已经验证。新增键盘补丁已通过遍历规则测试，完整原生窗口的键盘交互仍需人工确认。
+
+普通构建和发布复用 `.github/actions/windows-ci`，显式使用 `-Release` 打包，并生成 Cargo timings。两者都安装固定版本的 mbx；普通构建使用官方 Action 的 GitHub target 缓存（包含 Cargo 下载），成功推送默认分支时保存，PR 仅读取。发布采用官方建议的 `local` 后端，不恢复或上传跨 CI 运行的编译产物；同一发布任务中的各步仍共享本地缓存。发布工具测试始终在版本提交、标签和草稿创建之前运行。
 
 ## 发布
 

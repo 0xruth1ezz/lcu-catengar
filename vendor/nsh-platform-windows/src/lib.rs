@@ -1,3 +1,4 @@
+// Modified for Catengar: make unused custom shader support optional.
 //! Windows backend for nsh: a Win32 window per surface, the views drawn
 //! with Direct2D, text laid out with DirectWrite.
 //!
@@ -48,6 +49,7 @@ mod picker;
 mod render;
 mod scroll;
 mod selectable_view;
+#[cfg(feature = "shader")]
 mod shader;
 mod surface;
 #[cfg(feature = "dev")]

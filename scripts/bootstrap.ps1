@@ -14,9 +14,27 @@ if (!(Test-Path -LiteralPath $vswhere)) {
     throw 'Install Visual Studio Build Tools with Desktop development with C++ and the Windows SDK.'
 }
 $env:RUST_MIN_STACK = '268435456'
-Push-Location $root
-try {
-    & cargo fetch --locked
-    if ($LASTEXITCODE) { throw 'Cargo dependency download failed' }
-} finally { Pop-Location }
+# Explicit mbx invocation keeps this setup project-scoped, including in shells
+# without mise activation. Rust still comes from rust-toolchain.toml/rustup.
+$mbxVersion = (Select-String -LiteralPath (Join-Path $root 'mise.toml') -Pattern '^mr-boxington = "([^"]+)"$').Matches.Groups[1].Value
+$mbx = Get-Command mbx -CommandType Application -ErrorAction SilentlyContinue
+if (!$mbx -and (Get-Command mise -ErrorAction SilentlyContinue)) {
+    $mbxHome = & mise where "mr-boxington@$mbxVersion" 2>$null
+    if ($LASTEXITCODE -eq 0 -and $mbxHome) {
+        $mbxPath = Join-Path $mbxHome 'mbx.exe'
+        if (Test-Path -LiteralPath $mbxPath) { $mbx = Get-Command $mbxPath }
+    }
+}
+$CatengarCargo = (Get-Command cargo -CommandType Application).Source
+if ($mbx) {
+    if ((& $mbx.Source --version) -ne "mbx $mbxVersion") {
+        throw "Expected Mr. Boxington $mbxVersion. Run mise install in the repository, or update mbx on PATH."
+    }
+    $CatengarCargo = $mbx.Source
+    if (!$env:MBX_TARGET_VIEWS) { $env:MBX_TARGET_VIEWS = '0' }
+    Write-Output "Build cache: Mr. Boxington $mbxVersion"
+} else {
+    Write-Output 'Build cache: plain Cargo (optional: mise install)'
+}
+# Cargo downloads only the dependencies needed by the requested build.
 Write-Output 'Ready: Rust + pinned NSH (native Windows renderer)'

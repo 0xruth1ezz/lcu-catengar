@@ -167,6 +167,8 @@ pub(crate) struct Surface {
     on_hot_update_failed: RefCell<Option<Box<dyn Fn()>>>,
     /// The GPU device shader views render with, opened when the first
     /// shader is mounted (`None` inside: there is none).
+    // Modified for Catengar: omit the unused shader renderer unless enabled.
+    #[cfg(feature = "shader")]
     shader_renderer: std::cell::OnceCell<Option<Rc<nsh_engine::shader::Renderer>>>,
     /// Where `asset:/` image URIs resolve ([`crate::image::set_asset_base`]).
     pub(crate) asset_base: RefCell<Option<crate::image::AssetBase>>,
@@ -233,6 +235,7 @@ impl Surface {
             epoch: std::time::Instant::now(),
             on_error: RefCell::new(None),
             on_hot_update_failed: RefCell::new(None),
+            #[cfg(feature = "shader")]
             shader_renderer: std::cell::OnceCell::new(),
             asset_base: RefCell::new(None),
             image_cache: RefCell::new(None),
@@ -257,6 +260,7 @@ impl Surface {
 
     /// The GPU device shader views render with ([`crate::shader`]), opened
     /// the first time one asks.
+    #[cfg(feature = "shader")]
     pub(crate) fn shader_renderer(&self) -> Option<Rc<nsh_engine::shader::Renderer>> {
         self.shader_renderer
             .get_or_init(|| {
@@ -696,6 +700,7 @@ impl Surface {
         };
         // Shader views whose uniforms moved start rendering now that the
         // graph is not borrowed.
+        #[cfg(feature = "shader")]
         crate::shader::start_pending();
         // No surface state borrowed while the app's components run.
         crate::native::component_animated(self, moved);

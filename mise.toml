@@ -1,0 +1,6 @@
+[tools]
+mr-boxington = "1.29.0"
+
+[env]
+# Keep build output at the paths used by staging, startup tests and packaging.
+MBX_TARGET_VIEWS = "0"

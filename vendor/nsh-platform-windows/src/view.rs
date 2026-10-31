@@ -172,6 +172,8 @@ pub(crate) struct ViewState {
     pub(crate) canvas: Option<crate::canvas::CanvasState>,
     /// What a shader draws under the content and children
     /// ([`crate::shader`]).
+    // Modified for Catengar: shaders are an optional backend feature.
+    #[cfg(feature = "shader")]
     pub(crate) shader: Option<crate::shader::ShaderState>,
     /// Text field (input views).
     pub(crate) input: Option<Rc<crate::text_input::InputState>>,
@@ -205,6 +207,7 @@ impl ViewState {
             text: None,
             image: None,
             canvas: None,
+            #[cfg(feature = "shader")]
             shader: None,
             input: None,
             natives: Vec::new(),

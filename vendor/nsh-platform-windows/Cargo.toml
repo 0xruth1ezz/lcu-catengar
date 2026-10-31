@@ -15,7 +15,10 @@ unreachable_pub = "deny"
 private_interfaces = "deny"
 
 [features]
-default = ["js"]
+default = ["js", "shader", "highlight"]
+# Catengar uses native Direct2D controls, with no custom shader or code editor.
+shader = ["nsh-engine/shader"]
+highlight = ["nsh-base/highlight"]
 # JS apps (bundles, signed packages); without it, the library only runs a
 # Rust app and links no QuickJS.
 js = ["nsh-engine/js"]
@@ -28,8 +31,8 @@ log = "0.4"
 # Empty off Windows (like the other platform crates off their targets).
 [target.'cfg(windows)'.dependencies]
 nsh-core = { git = "https://github.com/longbridge/nsh", rev = "a5036af48ddc193b5023ece9b9196c76b8f8d3f5", features = ["svg", "loader"] }
-nsh-engine = { git = "https://github.com/longbridge/nsh", rev = "a5036af48ddc193b5023ece9b9196c76b8f8d3f5", features = ["net", "shader"], default-features = false }
-nsh-base = { git = "https://github.com/longbridge/nsh", rev = "a5036af48ddc193b5023ece9b9196c76b8f8d3f5", features = ["highlight"], default-features = false }
+nsh-engine = { git = "https://github.com/longbridge/nsh", rev = "a5036af48ddc193b5023ece9b9196c76b8f8d3f5", features = ["net"], default-features = false }
+nsh-base = { git = "https://github.com/longbridge/nsh", rev = "a5036af48ddc193b5023ece9b9196c76b8f8d3f5", default-features = false }
 windows = { version = "0.62", features = [
   "std",
   "Foundation_Numerics",

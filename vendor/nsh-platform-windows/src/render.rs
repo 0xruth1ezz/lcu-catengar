@@ -769,11 +769,15 @@ pub(crate) fn draw_view(cx: &mut DrawCx<'_>, view: &NshView, parent: Mat4, origi
 /// color, and nothing else: no children, content, hosted items, border,
 /// outline, shadow or effects. Its opacity is then its color's alpha.
 fn paints_one_shape(view: &NshView, state: &ViewState) -> bool {
+    #[cfg(feature = "shader")]
+    let no_shader = state.shader.is_none();
+    #[cfg(not(feature = "shader"))]
+    let no_shader = true;
     matches!(state.kind, ViewKind::View)
         && state.text.is_none()
         && state.image.is_none()
         && state.canvas.is_none()
-        && state.shader.is_none()
+        && no_shader
         && state.input.is_none()
         && state.scroll.is_none()
         && state.natives.is_empty()
@@ -913,6 +917,8 @@ pub(crate) fn draw_content(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4) {
     let state = view.state();
     crate::decor::draw_backdrop(cx, &state);
     crate::decor::draw_background(cx, &state);
+    // Modified for Catengar: shaders are an optional backend feature.
+    #[cfg(feature = "shader")]
     crate::shader::draw(cx, &state);
     let clip = state.clips();
     let (w, h) = (state.frame.size.width.0, state.frame.size.height.0);
@@ -1126,6 +1132,7 @@ fn draw_flat(cx: &mut DrawCx<'_>, view: &mut NshView, base: Mat4) {
 /// Draws the surface's window: the whole tree, then presents it.
 pub(crate) fn frame(surface: &Rc<Surface>) {
     // Shader views that came into sight render for the frames after it.
+    #[cfg(feature = "shader")]
     crate::shader::reveal();
     let Ok(gfx) = gfx::get() else { return };
     let hwnd = surface.hwnd();

@@ -65,32 +65,10 @@ jobs:
           python -B scripts/release.py prepare --bump $env:RELEASE_BUMP
           if ($LASTEXITCODE) { throw 'Release preparation failed' }
 
-      - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
-
-      - name: Verify and build
-        env:
-          RUST_MIN_STACK: '268435456'
-        run: |
-          cargo fmt --all --check
-          if ($LASTEXITCODE) { throw 'Formatting failed' }
-          cargo clippy --locked --all-targets -- -D warnings
-          if ($LASTEXITCODE) { throw 'Clippy failed' }
-          cargo test --locked --all-targets
-          if ($LASTEXITCODE) { throw 'Rust tests failed' }
-          cargo test --locked -p nsh-platform-windows --lib input::tests::keyboard
-          if ($LASTEXITCODE) { throw 'NSH Windows tests failed' }
-          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/test-updater.ps1
-          if ($LASTEXITCODE) { throw 'Updater tests failed' }
-          python scripts/test-auth-discovery.py
-          if ($LASTEXITCODE) { throw 'Discovery tests failed' }
-          cargo build --locked --release --bins
-          if ($LASTEXITCODE) { throw 'Build failed' }
-          ./scripts/stage-runtime.ps1
-          python scripts/test-transport.py
-          if ($LASTEXITCODE) { throw 'Transport tests failed' }
-          python scripts/test-startup.py
-          if ($LASTEXITCODE) { throw 'Startup failed' }
+      # Published artifacts start without compiled outputs from another CI run.
+      - uses: ./.github/actions/windows-ci
+        with:
+          cache-backend: local
 
       - name: Create versioned portable ZIP
         id: package

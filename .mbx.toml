@@ -1,0 +1,3 @@
+# Preserve Cargo's fast incremental dev builds; dependencies still use mbx.
+# CI ignores this setting and caches complete compiler actions instead.
+incremental = true

@@ -80,6 +80,8 @@ impl UiAnimation {
                 for &(k, value) in canvas {
                     crate::canvas::set_arg(view, k, value);
                 }
+                // Modified for Catengar: shaders are an optional backend feature.
+                #[cfg(feature = "shader")]
                 if !canvas.is_empty() {
                     crate::shader::set_args(view, canvas);
                 }

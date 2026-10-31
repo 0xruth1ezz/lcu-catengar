@@ -40,7 +40,7 @@ def main():
     parser.add_argument("--build-dir", type=Path, default=Path("target/x86_64-pc-windows-msvc/release"))
     args = parser.parse_args()
     source = args.build_dir.resolve()
-    for name in ("catengar.exe", "WebView2Loader.dll"):
+    for name in ("catengar.exe",):
         if not (source / name).is_file():
             raise RuntimeError(f"Missing startup dependency: {source / name}")
 
@@ -50,7 +50,9 @@ def main():
         # Deliberately omit the administrator helper: startup must render an
         # actionable disconnected state without opening a UAC prompt. Separate
         # test-auth covers the helper; package tests verify all shipped files.
-        for name in ("catengar.exe", "WebView2Loader.dll"):
+        # MSVC links WebView2LoaderStatic; startup must not depend on the
+        # separate DLL retained in release ZIPs for older updater clients.
+        for name in ("catengar.exe",):
             shutil.copy2(source / name, app / name)
         data = root / "data" / "LoLRengar"
         data.mkdir(parents=True)

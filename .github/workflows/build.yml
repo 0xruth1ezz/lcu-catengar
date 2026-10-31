@@ -21,47 +21,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
-      - name: Cache Cargo dependencies and build output
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ hashFiles('src/**/*.rs', 'tests/**/*.rs', 'vendor/**/*.rs') }}
-          restore-keys: |
-            rust-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
-      - name: Formatting and lint
+      - name: Test release tooling
         run: |
-          cargo fmt --all --check
-          if ($LASTEXITCODE) { throw 'Formatting failed' }
-          cargo clippy --locked --all-targets -- -D warnings
-          if ($LASTEXITCODE) { throw 'Clippy failed' }
-      - name: Offline regression tests
-        run: |
-          cargo test --locked --all-targets
-          if ($LASTEXITCODE) { throw 'Rust tests failed' }
-          cargo test --locked -p nsh-platform-windows --lib input::tests::keyboard
-          if ($LASTEXITCODE) { throw 'NSH Windows tests failed' }
           python -B -m unittest discover -s scripts -p test_release.py -v
-          if ($LASTEXITCODE) { throw 'Release tests failed' }
-          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/test-updater.ps1
-          if ($LASTEXITCODE) { throw 'Updater tests failed' }
-          python scripts/test-auth-discovery.py
-          if ($LASTEXITCODE) { throw 'Discovery tests failed' }
-      - name: Build portable Windows executables
-        run: |
-          cargo build --locked --release --bins
-          if ($LASTEXITCODE) { throw 'Build failed' }
-          ./scripts/stage-runtime.ps1
-      - name: Verify loopback TLS, WebSocket and portable startup
-        run: |
-          python scripts/test-transport.py
-          if ($LASTEXITCODE) { throw 'Transport tests failed' }
-          python scripts/test-startup.py
-          if ($LASTEXITCODE) { throw 'Startup failed' }
+          if ($LASTEXITCODE) { throw 'Release tooling tests failed' }
+      - uses: ./.github/actions/windows-ci
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: catengar-windows-x64-${{ github.sha }}
