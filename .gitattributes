@@ -1,4 +1,4 @@
-# Keep fresh Windows checkouts compatible with zig fmt --check.
+# Keep fresh Windows checkouts compatible with cargo fmt --check.
 * text=auto eol=lf
 
 *.ico binary

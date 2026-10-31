@@ -49,7 +49,7 @@ class ReleaseFilesFixture(unittest.TestCase):
         (self.root / "README.md").write_text("Catengar portable app\n", encoding="utf-8")
 
     def binaries(self):
-        directory = self.root / "zig-out/bin"
+        directory = self.root / "target/x86_64-pc-windows-msvc/release"
         directory.mkdir(parents=True)
         for name in (*release.EXECUTABLES, *release.WEBVIEW_FILES):
             (directory / name).write_bytes(b"fixture: " + name.encode())
@@ -58,18 +58,16 @@ class ReleaseFilesFixture(unittest.TestCase):
 
 
 class FilesTests(ReleaseFilesFixture):
-    def test_version_updates_manifest_and_both_executable_resources(self):
+    def test_version_updates_cargo_manifest_and_lockfile(self):
         release.set_version(self.root, "1.2.3")
         release.verify_version(self.root, "1.2.3")
         self.assertEqual(release.current_version(self.root), "1.2.3")
-        for name in release.VERSION_FILES[1:]:
-            content = (self.root / name).read_text()
-            self.assertIn("FILEVERSION 1,2,3,0", content)
-            self.assertIn("PRODUCTVERSION 1,2,3,0", content)
+        lock = (self.root / "Cargo.lock").read_text()
+        self.assertIn('name = "catengar"\nversion = "1.2.3"', lock)
 
-    def test_bad_resource_does_not_partially_update_version(self):
-        path = self.root / release.VERSION_FILES[-1]
-        path.write_text(path.read_text().replace("FILEVERSION", "BROKEN"))
+    def test_bad_lockfile_does_not_partially_update_version(self):
+        path = self.root / "Cargo.lock"
+        path.write_text(path.read_text().replace('name = "catengar"', 'name = "broken"'))
         before = {name: (self.root / name).read_bytes() for name in release.VERSION_FILES}
         with self.assertRaises(ValueError):
             release.set_version(self.root, "0.2.0")
@@ -85,16 +83,11 @@ class FilesTests(ReleaseFilesFixture):
             for name in (*release.EXECUTABLES, *release.WEBVIEW_FILES):
                 self.assertEqual(output.read(name), (binaries / name).read_bytes())
 
-    def test_webview_loader_required_only_for_webview_builds(self):
+    def test_webview_loader_is_required_for_portable_distribution(self):
         binaries = self.binaries()
         (binaries / "WebView2Loader.dll").unlink()
         with self.assertRaisesRegex(ValueError, "WebView2Loader"):
             release.package(self.root, "0.1.0", binaries, self.root / "artifacts/release")
-        manifest = self.root / "app.zon"
-        manifest.write_text(manifest.read_text().replace('"include"', '"exclude"'))
-        archive = release.package(self.root, "0.1.0", binaries, self.root / "artifacts/release")
-        with zipfile.ZipFile(archive) as output:
-            self.assertNotIn("WebView2Loader.dll", output.namelist())
 
     def test_missing_helper_or_wrong_version_cannot_be_packaged(self):
         binaries = self.binaries()
@@ -313,8 +306,8 @@ class PrepareTests(ReleaseFilesFixture):
             with self.assertRaises(RuntimeError):
                 self.prepare()
         self.assertEqual(release.git(self.remote, "tag", "--list"), "")
-        self.assertEqual(release.git(self.remote, "show", "main:app.zon"),
-                         (other / "app.zon").read_text().strip())
+        self.assertEqual(release.git(self.remote, "show", "main:Cargo.toml"),
+                         (other / "Cargo.toml").read_text().strip())
         self.assertFalse(self.api.creates)
 
 

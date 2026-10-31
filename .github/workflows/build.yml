@@ -1,112 +1,76 @@
 name: Windows build
-
 on:
   push:
   pull_request:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
   group: windows-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     defaults:
       run:
         shell: pwsh
     env:
-      # Bump when changing compiler flags or the cache layout.
-      CACHE_VERSION: v1
+      RUST_MIN_STACK: '268435456'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Set compiler cache directory
-        run: '"ZIG_GLOBAL_CACHE_DIR=$env:RUNNER_TEMP/zig-global-cache" >> $env:GITHUB_ENV'
-
-      - name: Cache pinned toolchain and Native SDK
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
+      - name: Cache Cargo dependencies and build output
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            .tools/zig-x86_64-windows-0.16.0
-            .tools/native
-          key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/bootstrap.ps1', 'scripts/patch-native.ps1') }}
-
-      - name: Install verified dependencies
-        run: ./scripts/bootstrap.ps1
-
-      - name: Restore Zig compiler and build caches
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ${{ runner.temp }}/zig-global-cache
-            .zig-cache
-          key: zig-${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/bootstrap.ps1', 'build.zig', 'build.zig.zon', 'app.zon') }}-${{ hashFiles('src/**', 'assets/**') }}
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ hashFiles('src/**/*.rs', 'tests/**/*.rs', 'vendor/**/*.rs') }}
           restore-keys: |
-            zig-${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/bootstrap.ps1', 'build.zig', 'build.zig.zon', 'app.zon') }}-
-            zig-${{ env.CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Check Zig formatting
+            rust-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
+      - name: Formatting and lint
         run: |
-          & .tools/zig-x86_64-windows-0.16.0/zig.exe fmt --check build.zig build.zig.zon app.zon src
-          if ($LASTEXITCODE) { throw 'Zig formatting check failed' }
-
-      - name: Test release tooling
+          cargo fmt --all --check
+          if ($LASTEXITCODE) { throw 'Formatting failed' }
+          cargo clippy --locked --all-targets -- -D warnings
+          if ($LASTEXITCODE) { throw 'Clippy failed' }
+      - name: Offline regression tests
         run: |
+          cargo test --locked --all-targets
+          if ($LASTEXITCODE) { throw 'Rust tests failed' }
+          cargo test --locked -p nsh-platform-windows --lib input::tests::keyboard
+          if ($LASTEXITCODE) { throw 'NSH Windows tests failed' }
           python -B -m unittest discover -s scripts -p test_release.py -v
-          if ($LASTEXITCODE) { throw 'Release tooling tests failed' }
-
-      - name: Run offline tests
-        run: |
-          & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-target --summary all
-          if ($LASTEXITCODE) { throw 'Portable CPU target check failed' }
+          if ($LASTEXITCODE) { throw 'Release tests failed' }
           powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/test-updater.ps1
           if ($LASTEXITCODE) { throw 'Updater tests failed' }
-          & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-core --summary all
-          if ($LASTEXITCODE) { throw 'Core tests failed' }
-          & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-images --summary all
-          if ($LASTEXITCODE) { throw 'Image cache tests failed' }
-          & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-ime --summary all
-          if ($LASTEXITCODE) { throw 'Input method tests failed' }
-          & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-window --summary all
-          if ($LASTEXITCODE) { throw 'Window placement tests failed' }
-          & .tools/zig-x86_64-windows-0.16.0/zig.exe build test-auth --summary all
-          if ($LASTEXITCODE) { throw 'Credential helper tests failed' }
           python scripts/test-auth-discovery.py
-          if ($LASTEXITCODE) { throw 'Client discovery tests failed' }
-
-      - name: Test TLS and WebSocket reconnection offline
+          if ($LASTEXITCODE) { throw 'Discovery tests failed' }
+      - name: Build portable Windows executables
+        run: |
+          cargo build --locked --release --bins
+          if ($LASTEXITCODE) { throw 'Build failed' }
+          ./scripts/stage-runtime.ps1
+      - name: Verify loopback TLS, WebSocket and portable startup
         run: |
           python scripts/test-transport.py
-          if ($LASTEXITCODE) { throw 'Transport fault tests failed' }
-
-      - name: Build Windows executables
-        run: |
-          & .tools/zig-x86_64-windows-0.16.0/zig.exe build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu -Dcpu=baseline --summary all
-          if ($LASTEXITCODE) { throw 'Windows build failed' }
-
-      - name: Smoke-test portable startup
-        run: |
+          if ($LASTEXITCODE) { throw 'Transport tests failed' }
           python scripts/test-startup.py
-          if ($LASTEXITCODE) { throw 'Portable startup test failed' }
-
-      - name: Upload portable application
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          if ($LASTEXITCODE) { throw 'Startup failed' }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: catengar-windows-x64-${{ github.sha }}
           path: |
-            zig-out/bin/catengar.exe
-            zig-out/bin/catengar-auth.exe
-            zig-out/bin/catengar-diagnose.exe
-            zig-out/bin/WebView2Loader.dll
-            zig-out/bin/WebView2-LICENSE.txt
+            target/x86_64-pc-windows-msvc/release/catengar.exe
+            target/x86_64-pc-windows-msvc/release/catengar-auth.exe
+            target/x86_64-pc-windows-msvc/release/catengar-diagnose.exe
+            target/x86_64-pc-windows-msvc/release/WebView2Loader.dll
+            target/x86_64-pc-windows-msvc/release/WebView2-LICENSE.txt
             README.md
           if-no-files-found: error
-          compression-level: 6
           retention-days: 14

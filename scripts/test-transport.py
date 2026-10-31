@@ -1,12 +1,13 @@
 """Offline TLS/WAMP fault fixtures; uses Python's standard library only.
 
-Usage: python scripts/test-transport.py [path/to/zig.exe]
+Usage: python scripts/test-transport.py [path/to/cargo.exe]
 Never reads League credentials or starts the GUI. All ports are OS-assigned.
 """
 import base64
 import hashlib
 import http.server
 import json
+import os
 import pathlib
 import socket
 import ssl
@@ -39,7 +40,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             super().handle()
         except (ConnectionResetError, BrokenPipeError):
-            # The test deliberately cancels WinHTTP handles with pending reads.
+            # The test deliberately cancels sockets with pending reads.
             pass
 
     def log_message(self, *_):
@@ -78,8 +79,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with self.server.lock:
                 self.server.streams.append(self.connection)
             try:
-                # Read all six subscription frames before sending a phase event.
-                for _ in range(6):
+                # One generic WAMP subscription covers all relevant LCU events.
+                for _ in range(1):
                     first = self.rfile.read(2)
                     if len(first) != 2:
                         return
@@ -89,7 +90,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     mask = self.rfile.read(4)
                     data = self.rfile.read(length)
                     message = json.loads(bytes(v ^ mask[i % 4] for i, v in enumerate(data)))
-                    if message[0] != 5:
+                    if message != [5, "OnJsonApiEvent"]:
                         raise ValueError("expected WAMP subscription")
                 message = json.dumps([8, "OnJsonApiEvent_lol-gameflow_v1_gameflow-phase", {
                     "uri": "/lol-gameflow/v1/gameflow-phase", "eventType": "Update", "data": "Lobby"
@@ -126,13 +127,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def main():
-    zig = sys.argv[1] if len(sys.argv) > 1 else ROOT / ".tools/zig-x86_64-windows-0.16.0/zig.exe"
+    cargo = sys.argv[1] if len(sys.argv) > 1 else "cargo"
     servers = [Fixture(), Fixture()]
     for server in servers:
         threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        result = subprocess.run([str(zig), "build", "test-transport", "--summary", "all", "--",
-                                 *(str(server.server_port) for server in servers)], cwd=ROOT, timeout=180)
+        environment = dict(os.environ, CATENGAR_TRANSPORT_PORTS=",".join(str(s.server_port) for s in servers))
+        result = subprocess.run([str(cargo), "test", "--locked", "--test", "transport", "--", "--ignored"],
+                                cwd=ROOT, env=environment, timeout=180)
         if any(server.writes for server in servers):
             raise AssertionError("expired credentials must block writes")
         return result.returncode

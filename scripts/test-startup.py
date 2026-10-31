@@ -37,7 +37,7 @@ def startup_directory():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build-dir", type=Path, default=Path("zig-out/bin"))
+    parser.add_argument("--build-dir", type=Path, default=Path("target/x86_64-pc-windows-msvc/release"))
     args = parser.parse_args()
     source = args.build_dir.resolve()
     for name in ("catengar.exe", "WebView2Loader.dll"):
@@ -45,7 +45,7 @@ def main():
             raise RuntimeError(f"Missing startup dependency: {source / name}")
 
     with startup_directory() as root:
-        app = root / "portable space's [test]"
+        app = root / "便携程序 space's [test]"
         app.mkdir()
         # Deliberately omit the administrator helper: startup must render an
         # actionable disconnected state without opening a UAC prompt. Separate
@@ -72,10 +72,11 @@ def main():
         env = os.environ.copy()
         env["LOCALAPPDATA"] = str(root / "data")
         env["APPDATA"] = str(root / "roaming")
+        env["CATENGAR_DATA_DIR"] = str(data)
         log_path = root / "startup.log"
         with log_path.open("wb") as log:
             process = subprocess.Popen(
-                [str(app / "catengar.exe")], cwd=app, env=env,
+                [str(app / "catengar.exe"), "--preview"], cwd=app, env=env,
                 stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW,
             )
             visible = False
@@ -105,12 +106,22 @@ def main():
                     time.sleep(0.1)
                 if not visible:
                     raise RuntimeError("Application stayed alive but never showed its window")
+                # A second launch for the same profile must exit, not create
+                # another automation worker. Preview never queries live LCU.
+                duplicate = subprocess.run([str(app / "catengar.exe"), "--preview"], cwd=app,
+                                           env=env, stdout=log, stderr=log, timeout=10,
+                                           creationflags=subprocess.CREATE_NO_WINDOW)
+                if duplicate.returncode != 0 or process.poll() is not None:
+                    raise RuntimeError("Single-instance restoration failed")
+                restored = json.loads((data / "priority-champions.json").read_text(encoding="utf-8"))
+                if restored["champions"][0]["name"] != "雷恩加尔":
+                    raise RuntimeError("Offline priority cache was not preserved")
             finally:
                 # Stop only the exact isolated process created by this test.
                 if process.poll() is None:
                     process.terminate()
                 process.wait(timeout=10)
-        print("PASS: portable app displayed its window and survived startup with an isolated offline priority cache")
+        print("PASS: portable window, Chinese-path startup, offline priority cache and single instance")
 
 
 if __name__ == "__main__":

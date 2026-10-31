@@ -1,7 +1,7 @@
 """Version, draft, and package Catengar releases using only Python's standard library.
 
 The prepare/upload commands run in GitHub Actions with its scoped GH_TOKEN.
-Package can also run locally after a ReleaseSafe build.
+Package can also run locally after a Cargo release build.
 """
 
 import argparse
@@ -15,10 +15,10 @@ import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION_FILES = ("app.zon", "assets/catengar.rc", "assets/catengar-auth.rc")
+VERSION_FILES = ("Cargo.toml", "Cargo.lock")
 EXECUTABLES = ("catengar.exe", "catengar-auth.exe", "catengar-diagnose.exe")
 WEBVIEW_FILES = ("WebView2Loader.dll", "WebView2-LICENSE.txt")
-VERSION_PATTERN = re.compile(r'(?m)^(\s*\.version\s*=\s*")([^"\r\n]+)(",?\s*)$')
+VERSION_PATTERN = re.compile(r'(?m)^(version[ \t]*=[ \t]*")([^"\r\n]+)("[ \t]*)$')
 
 
 def parse_version(value):
@@ -38,9 +38,9 @@ def version_text(parts):
 
 
 def current_version(root):
-    matches = VERSION_PATTERN.findall((root / "app.zon").read_text(encoding="utf-8"))
+    matches = VERSION_PATTERN.findall((root / "Cargo.toml").read_text(encoding="utf-8"))
     if len(matches) != 1:
-        raise ValueError("Expected exactly one .version in app.zon.")
+        raise ValueError("Expected exactly one package version in Cargo.toml.")
     return version_text(parse_version(matches[0][1]))
 
 
@@ -68,17 +68,12 @@ def version_contents(root, version):
     result[VERSION_FILES[0]] = VERSION_PATTERN.sub(
         lambda match: match[1] + version + match[3], manifest
     )
-    resource_version = version.replace(".", ",") + ",0"
-    for name in VERSION_FILES[1:]:
-        content = (root / name).read_text(encoding="utf-8")
-        for field in ("FILEVERSION", "PRODUCTVERSION"):
-            content, count = re.subn(
-                rf"(?m)^{field}[ \t]+[0-9]+,[0-9]+,[0-9]+,[0-9]+[ \t]*$",
-                f"{field} {resource_version}", content,
-            )
-            if count != 1:
-                raise ValueError(f"Expected exactly one {field} in {name}.")
-        result[name] = content
+    lock = (root / "Cargo.lock").read_text(encoding="utf-8")
+    pattern = re.compile(r'(\[\[package\]\]\nname = "catengar"\nversion = ")[^"]+("\n)')
+    updated, count = pattern.subn(lambda match: match[1] + version + match[2], lock)
+    if count != 1:
+        raise ValueError("Expected exactly one catengar package in Cargo.lock.")
+    result["Cargo.lock"] = updated
     return result
 
 
@@ -230,9 +225,7 @@ def package(root, version, build_dir, output_dir):
     version = version_text(parse_version(version))
     verify_version(root, version)
     files = [build_dir / name for name in EXECUTABLES] + [root / "README.md"]
-    # Recovery can package older, native-only tags using this newer script.
-    if re.search(r'\.webview_layer\s*=\s*"include"', (root / "app.zon").read_text(encoding="utf-8")):
-        files.extend(build_dir / name for name in WEBVIEW_FILES)
+    files.extend(build_dir / name for name in WEBVIEW_FILES)
     for path in files:
         if not path.is_file() or path.stat().st_size == 0:
             raise ValueError(f"Required release file is missing or empty: {path}")
@@ -293,7 +286,7 @@ def main():
     prepare_parser.add_argument("--bump", choices=("patch", "minor", "major"), default="patch")
     package_parser = commands.add_parser("package", help="Zip the three executables and README")
     package_parser.add_argument("--version", required=True)
-    package_parser.add_argument("--build-dir", type=Path, default=ROOT / "zig-out/bin")
+    package_parser.add_argument("--build-dir", type=Path, default=ROOT / "target/x86_64-pc-windows-msvc/release")
     package_parser.add_argument("--output-dir", type=Path, default=ROOT / "artifacts/release")
     upload_parser = commands.add_parser("upload", help="Upload the ZIP to this run's draft release")
     upload_parser.add_argument("--tag", required=True)

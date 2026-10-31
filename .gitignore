@@ -6,3 +6,5 @@ zig-out/
 *.log
 artifacts/
 .impeccable/review/
+target/
+__pycache__/

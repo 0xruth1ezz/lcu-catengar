@@ -6,8 +6,9 @@
 
 windows
 
-Native Windows desktop application. The existing implementation uses Zig and
-vercel-labs/native, with a GPU-rendered interface and no Node runtime. Champion
+Native Windows desktop application. The implementation uses Rust and NSH, with a native Windows-rendered
+interface and no Node or JavaScript runtime. The owner confirmed a full Rust +
+NSH rewrite on 2026-10-31. Champion
 details use one floating dialog with a single `haidou.pro` tab that opens the
 champion's page in WebView2. The main interface and LCU automation remain native.
 Windows is recorded explicitly because this application does not fit the skill's
@@ -154,29 +155,22 @@ direction was established during initialization.
 
 - `README.md`: documented workflows, automation boundaries, local storage,
   connection behavior, build instructions, and verification commands.
-- `app.zon`, `build.zig.zon`: Windows application manifest and existing native
-  stack.
-- `src/app.native`, `src/main.zig`, `src/titlebar.zig`, `src/toast.native`:
-  implemented interface, status copy, window behavior, and notifications.
-- `src/champion_detail.native`, `src/champion_details.zig`, `src/main.zig`:
-  champion detail dialog, single `haidou.pro` tab, WebView lifecycle, and
-  browser fallback.
-- `src/updater.zig`, `src/updater.ps1`, `src/main.zig`, `src/app.native`:
-  periodic stable-release checks, explicit update consent, validation,
-  game protection, replacement, recovery, and settings states.
-- `.github/workflows/build.yml`, `.github/workflows/release.yml`,
-  `scripts/test-updater.ps1`: offline updater verification and the release
-  workflow, which automatically publishes a pre-release after uploading the ZIP.
-- `src/types.zig`, `src/logic.zig`, `src/service.zig`, `src/settings.zig`:
-  preference limits, continuous and per-round selection rules, client-confirmed
-  completion, round detection, automation, and settings compatibility.
-- `src/theme.zig`, `src/font.zig`, `src/ime.zig`: existing appearance options,
-  Chinese font loading, and Windows input-method integration.
-- `assets/catengar-icon.png`, `assets/catengar.ico`: shipped application identity.
-- `src/tests.zig`, `src/selection_policy_tests.zig`, `src/transport_test.zig`,
-  `src/native_image_test.zig`:
-  repository verification assets; their presence is not a claim that they were
-  run during this documentation task.
+- `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/config.toml`:
+  pinned Rust/NSH dependencies and portable x64 build configuration.
+- `src/ui.rs`, `src/platform.rs`: NSH components, five palettes, native windows,
+  tray, notifications, WebView2 detail lifecycle and Windows accessibility.
+- `src/model.rs`, `src/engine.rs`, `src/service.rs`, `src/transport.rs`:
+  preference rules, confirmed selections, round state, local client automation,
+  resource caching, event reconciliation and connection recovery.
+- `src/auth.rs`, `src/auth_discovery.ps1`: authentication discovery and private
+  elevated helper protocol; credentials are excluded from diagnostics.
+- `src/storage.rs`, `src/journal.rs`: compatible settings and persistent logs.
+- `src/updater.rs`, `src/updater.ps1`, `.github/workflows/`:
+  explicit update consent, stable-release validation, game protection,
+  replacement, recovery and pre-release publishing.
+- `assets/catengar-icon.png`, `assets/catengar.ico`: retained application identity.
+- `tests/`, `scripts/test-*`, `scripts/test_release.py`: offline regression
+  fixtures; validation results belong to the specific build, not this brief.
 
 ## Product Principles
 

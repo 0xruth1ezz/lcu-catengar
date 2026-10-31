@@ -1,0 +1,10 @@
+[build]
+target = "x86_64-pc-windows-msvc"
+# NSH and Windows bindings produce large link jobs; keep CI memory bounded.
+jobs = 2
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-cpu=x86-64", "-C", "target-feature=+crt-static"]
+
+[env]
+RUST_MIN_STACK = "268435456"

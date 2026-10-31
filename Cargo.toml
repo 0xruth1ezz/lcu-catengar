@@ -1,0 +1,56 @@
+[package]
+name = "catengar"
+version = "0.1.7"
+edition = "2024"
+rust-version = "1.99"
+default-run = "catengar"
+description = "Native Windows League Client companion, built with NSH"
+
+[lib]
+name = "catengar"
+
+[[bin]]
+name = "catengar"
+path = "src/main.rs"
+
+[[bin]]
+name = "catengar-auth"
+path = "src/bin/auth.rs"
+
+[[bin]]
+name = "catengar-diagnose"
+path = "src/bin/diagnose.rs"
+
+[dependencies]
+nsh-core = { git = "https://github.com/longbridge/nsh", rev = "a5036af48ddc193b5023ece9b9196c76b8f8d3f5" }
+nsh-base = { git = "https://github.com/longbridge/nsh", rev = "a5036af48ddc193b5023ece9b9196c76b8f8d3f5" }
+nsh-platform-windows = { git = "https://github.com/longbridge/nsh", rev = "a5036af48ddc193b5023ece9b9196c76b8f8d3f5", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+crossbeam-channel = "0.5"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "native-tls", "json"] }
+tungstenite = { version = "0.28", features = ["native-tls"] }
+native-tls = "0.2"
+percent-encoding = "2"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_Pipes", "Win32_System_IO", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_System_Ole", "Win32_System_Memory", "Win32_System_Diagnostics_ToolHelp", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_Graphics_Gdi", "Win32_Graphics_Dwm"] }
+
+[build-dependencies]
+winresource = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+
+# Windows keyboard traversal fix; provenance and change scope are in the vendored README.
+[patch."https://github.com/longbridge/nsh"]
+nsh-platform-windows = { path = "vendor/nsh-platform-windows" }

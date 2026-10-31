@@ -1,0 +1,87 @@
+# Modified for Catengar: expand pinned upstream workspace metadata and dependencies.
+[package]
+name = "nsh-platform-windows"
+description = "Windows backend (Win32, Direct2D, DirectWrite): view mounting, text engine, input, standalone app."
+version = "0.3.0"
+edition = "2024"
+license = "Apache-2.0"
+homepage = "https://nsh.dev"
+readme = "README.md"
+repository = "https://github.com/longbridge/nsh"
+
+[lints.rust]
+missing_docs = "warn"
+unreachable_pub = "deny"
+private_interfaces = "deny"
+
+[features]
+default = ["js"]
+# JS apps (bundles, signed packages); without it, the library only runs a
+# Rust app and links no QuickJS.
+js = ["nsh-engine/js"]
+# Development support: dev server client, log forwarding, error overlay.
+dev = ["js", "dep:nsh-dev", "dep:nsh-testing"]
+
+[dependencies]
+log = "0.4"
+
+# Empty off Windows (like the other platform crates off their targets).
+[target.'cfg(windows)'.dependencies]
+nsh-core = { git = "https://github.com/longbridge/nsh", rev = "a5036af48ddc193b5023ece9b9196c76b8f8d3f5", features = ["svg", "loader"] }
+nsh-engine = { git = "https://github.com/longbridge/nsh", rev = "a5036af48ddc193b5023ece9b9196c76b8f8d3f5", features = ["net", "shader"], default-features = false }
+nsh-base = { git = "https://github.com/longbridge/nsh", rev = "a5036af48ddc193b5023ece9b9196c76b8f8d3f5", features = ["highlight"], default-features = false }
+windows = { version = "0.62", features = [
+  "std",
+  "Foundation_Numerics",
+  "Win32_Foundation",
+  "Win32_Globalization",
+  "Win32_Graphics_Direct2D",
+  "Win32_Graphics_Direct2D_Common",
+  "Win32_Graphics_Direct3D",
+  "Win32_Graphics_Direct3D11",
+  "Win32_Graphics_DirectComposition",
+  "Win32_Graphics_DirectWrite",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_Graphics_Gdi",
+  "Win32_Graphics_Imaging",
+  "Win32_Graphics_Imaging_D2D",
+  "Win32_Media_MediaFoundation",
+  "Win32_Storage_Xps",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_DataExchange",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Memory",
+  "Win32_System_Ole",
+  "Win32_System_Performance",
+  "Win32_System_Registry",
+  "Win32_System_SystemInformation",
+  "Win32_System_SystemServices",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+  "Win32_System_WinRT",
+  "Win32_UI_Accessibility",
+  "Win32_UI_Controls",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_Ime",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Input_Pointer",
+  "Win32_UI_Shell",
+  "Win32_UI_Shell_Common",
+  "Win32_UI_WindowsAndMessaging",
+] }
+windows-core = "0.62"
+windows-numerics = "0.3"
+webview2-com = "0.39"
+# GIF and WebP animations (WIC decodes the first frame of everything else).
+image = { version = "0.25", default-features = false, features = ["png", "gif", "webp"] }
+rustc-hash = "2.1"
+serde_json = "1"
+url = "2.5"
+ttf-parser = "0.25"
+crossbeam-channel = "0.5"
+nsh-dev = { git = "https://github.com/longbridge/nsh", rev = "a5036af48ddc193b5023ece9b9196c76b8f8d3f5", features = ["client"], optional = true }
+nsh-testing = { git = "https://github.com/longbridge/nsh", rev = "a5036af48ddc193b5023ece9b9196c76b8f8d3f5", features = ["agent"], default-features = false, optional = true }
