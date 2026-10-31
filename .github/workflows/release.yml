@@ -17,6 +17,10 @@ on:
           - patch
           - minor
           - major
+      clean_build:
+        description: Build without restoring compiler outputs (slower, for clean-build verification)
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -65,10 +69,12 @@ jobs:
           python -B scripts/release.py prepare --bump $env:RELEASE_BUMP
           if ($LASTEXITCODE) { throw 'Release preparation failed' }
 
-      # Published artifacts start without compiled outputs from another CI run.
+      # The default branch supplies compatible dependency outputs. Cargo still
+      # rebuilds the versioned application and all verification steps run.
+      # A dispatch is restore-only; opt into a cold build when it is required.
       - uses: ./.github/actions/windows-ci
         with:
-          cache-backend: local
+          cache-backend: ${{ inputs.clean_build && 'local' || 'github' }}
 
       - name: Create versioned portable ZIP
         id: package

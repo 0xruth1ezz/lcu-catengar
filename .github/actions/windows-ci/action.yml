@@ -2,11 +2,24 @@ name: Verify and build Windows
 description: Shared Rust checks, integration tests and portable release build
 inputs:
   cache-backend:
-    description: Mr. Boxington backend (github for CI, local for published releases)
+    description: Mr. Boxington backend (github for reuse, local for an explicit cold build)
     default: github
 runs:
   using: composite
   steps:
+    - name: Configure CI compilation
+      shell: pwsh
+      run: |
+        # Keep local debug builds unchanged. CI needs assertions, not debug symbols.
+        $buildJobs = [Math]::Min(4, [Environment]::ProcessorCount)
+        @(
+          'CARGO_PROFILE_DEV_DEBUG=0'
+          'CARGO_PROFILE_TEST_DEBUG=0'
+          'CARGO_INCREMENTAL=0'
+          "CARGO_BUILD_JOBS=$buildJobs"
+        ) >> $env:GITHUB_ENV
+        Write-Output "CI compilation: $buildJobs jobs, dev/test debug info disabled"
+
     - name: Install pinned Rust toolchain
       id: toolchain
       shell: pwsh
@@ -15,6 +28,10 @@ runs:
         rustup toolchain install $channel --profile minimal --component rustfmt --component clippy --target x86_64-pc-windows-msvc
         if ($LASTEXITCODE) { throw 'Rust installation failed' }
         "channel=$channel" >> $env:GITHUB_OUTPUT
+        $compiler = (rustup run $channel rustc -vV) -join "`n"
+        if ($LASTEXITCODE) { throw 'Rust compiler identity lookup failed' }
+        $compilerHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($compiler))).ToLowerInvariant()
+        "cache-id=$compilerHash" >> $env:GITHUB_OUTPUT
         $mbxVersion = (Select-String -LiteralPath mise.toml -Pattern '^mr-boxington = "([^"]+)"$').Matches.Groups[1].Value
         "mbx-version=$mbxVersion" >> $env:GITHUB_OUTPUT
 
@@ -25,7 +42,14 @@ runs:
         toolchain: ${{ steps.toolchain.outputs.channel }}
         backend: ${{ inputs.cache-backend }}
         github-cache-mode: target
-        cache-generation: catengar-v1
+        # Reuse one dependency baseline across source-only commits instead of
+        # recompressing the same large target tree after every push.
+        cache-key: catengar-${{ runner.os }}-${{ runner.arch }}-v2-${{ steps.toolchain.outputs.cache-id }}-${{ hashFiles('mise.toml', '.cargo/config.toml', '.github/actions/windows-ci/action.yml') }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'vendor/**') }}
+        restore-keys: |
+          catengar-${{ runner.os }}-${{ runner.arch }}-v2-${{ steps.toolchain.outputs.cache-id }}-${{ hashFiles('mise.toml', '.cargo/config.toml', '.github/actions/windows-ci/action.yml') }}-
+        # Default-branch pushes seed the cache; releases and PRs only read it.
+        save-on-workflow-dispatch: false
+        save-on-pull-request: false
 
     - name: Formatting and lint
       shell: pwsh
