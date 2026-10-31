@@ -559,10 +559,7 @@ impl Service {
                         c.get(transport::PHASE, true)?;
                         next_phase = now + phase_interval;
                     }
-                    if live
-                        && snapshot.phase == "ReadyCheck"
-                        && now >= next_ready
-                    {
+                    if live && snapshot.phase == "ReadyCheck" && now >= next_ready {
                         c.get(transport::READY, true)?;
                         next_ready = now + 500;
                     }
