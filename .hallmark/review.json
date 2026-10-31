@@ -1,0 +1,63 @@
+{
+  "reviewedAt": "2026-10-31T05:55:36.000718+00:00",
+  "scope": "Native Windows app, practical compact redesign; existing functionality and palettes preserved",
+  "validation": {
+    "rustTests": {
+      "passed": 68,
+      "ignored": 3
+    },
+    "clippy": "passed with -D warnings",
+    "release": "built",
+    "portableStartup": "passed for final release build",
+    "native": [
+      "switch label and track click",
+      "reorder down and up",
+      "add and remove champion after resize",
+      "search and empty result",
+      "all five themes",
+      "About and Escape",
+      "log loading and columns",
+      "minimum window and capped maximized layout",
+      "two maximize/restore cycles after fix"
+    ]
+  },
+  "finishReview": {
+    "mode": "fresh-context subagent",
+    "verdict": "fix",
+    "findings": [
+      {
+        "issue": "Champion names truncated after resize",
+        "resolution": "Explicit stable centered name width and minimum tile width; two maximize/restore cycles show full names",
+        "status": "resolved",
+        "capture": "review/after-resize-fixed.jpg"
+      },
+      {
+        "issue": "Compact controls inherit standard minimum height",
+        "resolution": "Explicit 28-unit minimum height; no row overlap, selection click verified",
+        "status": "resolved",
+        "capture": "review/after-home-final.jpg"
+      }
+    ],
+    "scoredBy": "parent against confirming native captures"
+  },
+  "limitations": [
+    "sloplint --render accepts web files, not Rust/NSH, and returned no supported files; no automated Hallmark pass claimed",
+    "Offline preview uses seven real cached champions, not a live LCU game",
+    "Native round control host unchanged against task baseline; PickControl only substitutes identical shared radius/font tokens; lifecycle regression tests passed, standalone pointer test not rerun in this UI task"
+  ],
+  "captures": {
+    "beforeHome": "review/before-home.jpg",
+    "beforeSettings": "review/before-settings.jpg",
+    "homeFinal": "review/after-home-final.jpg",
+    "homeWide": "review/after-home-wide.jpg",
+    "settingsMinimum": "review/after-settings-minimum.jpg",
+    "logsFinal": "review/after-logs-final.jpg",
+    "about": "review/after-about.jpg"
+  },
+  "material": "Actual product captures and local cached champion assets; no missing slots, invented claims, testimonials or metrics",
+  "sourceHashes": {
+    "src/ui.rs": "a66d079b0d283ca78509a55acee0b68837d63036dbeaed97306fbc89d88e83f0",
+    "src/theme.rs": "8a58ec207f89278cc91671335c2409be51b085f2d31ce8064956c622575c6836",
+    "src/platform.rs": "7d87644a7d0326552f4dd20dcdceb83e471ad5e13942e9deacecfe40160b1305"
+  }
+}

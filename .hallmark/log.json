@@ -1,0 +1,37 @@
+[
+ {
+  "shape": "native app workspace",
+  "theme": "locked Catengar five-palette system",
+  "axes": {
+   "density": "compact",
+   "alignment": "left",
+   "navigation": "persistent header",
+   "material": "real cached champion portraits"
+  },
+  "hero": "not applicable: native app scope",
+  "nav": "Heroes / Logs / Settings",
+  "footer": "connection state, version, connected account actions",
+  "imagery": "real LCU-cached champion portraits in isolated preview",
+  "photos": [],
+  "entry": "src/ui.rs",
+  "fingerprint": "toolbar / flexible named champion grid / ordered priorities / aligned settings / activity columns",
+  "sections": [
+   "automation toolbar",
+   "champion library",
+   "priorities",
+   "settings",
+   "activity log"
+  ],
+  "signature": "visible champion names beside directly editable priorities",
+  "waived": [],
+  "prompt": "Optimize the existing native app with Hallmark; practical and compact, preserving five themes and standalone round control",
+  "review": {
+   "hero": "not applicable: app scope",
+   "finish": "subagent: fix; 2 findings resolved in native recaptures",
+   "sloplint": "unsupported native Rust/NSH input; no web lint pass claimed",
+   "material": "no missing visual assets"
+  },
+  "date": "2026-10-31",
+  "mode": "build"
+ }
+]

@@ -1,7 +1,7 @@
 //! Run with scripts/test-transport.py: local TLS/WAMP servers, no League access.
 use catengar::{
     auth::Credentials,
-    transport::{Api, Client, PHASE},
+    transport::{Api, Client, PHASE, SUBSET},
 };
 use std::{
     sync::atomic::Ordering,
@@ -45,6 +45,14 @@ fn tls_events_reconnect_rotation_and_bounded_shutdown() {
     first.get("/fixture/chat", true).unwrap();
     wait(|| first.chat_revision() > chat_revision, 5);
     assert!(first.wake.recv_timeout(Duration::from_secs(1)).is_ok());
+    let revision = first.revision();
+    first.get("/fixture/subset", true).unwrap();
+    wait(|| first.revision() > revision, 5);
+    // This resource is 404 over REST in the fixture. Its live event must be
+    // retained in the candidate cache and participate in the write guard.
+    let cards = first.get(SUBSET, false).unwrap();
+    assert_eq!(cards.data, serde_json::json!([107, 103]));
+    assert!(first.guard(&[(SUBSET, &cards.data)]).is_some());
     let observed = serde_json::json!("ChampSelect");
     assert!(first.guard(&[(PHASE, &observed)]).is_none());
     assert_eq!(second.get(PHASE, true).unwrap().data, "Lobby");

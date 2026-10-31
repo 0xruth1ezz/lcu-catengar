@@ -108,7 +108,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         self.server.streams.remove(self.connection)
                 self.close_connection = True
             return
-        if self.path == "/fixture/chat":
+        if self.path == "/fixture/subset":
+            message = json.dumps([8, "OnJsonApiEvent", {
+                "uri": "/lol-lobby-team-builder/champ-select/v1/subset-champion-list",
+                "eventType": "Update", "data": [107, 103]
+            }]).encode()
+            frame = bytes([0x81, 126]) + len(message).to_bytes(2, "big") + message
+            with self.server.lock:
+                for stream in self.server.streams:
+                    stream.sendall(frame)
+            self.reply(200, None)
+        elif self.path == "/fixture/chat":
             message = json.dumps([8, "OnJsonApiEvent", {
                 "uri": "/lol-chat/v1/conversations/c1~fixture@server",
                 "eventType": "Create", "data": {"type": "championSelect"}

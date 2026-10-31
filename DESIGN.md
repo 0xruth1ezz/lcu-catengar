@@ -47,7 +47,6 @@ colors:
   catppuccin-accent: "#cba6f7"
   catppuccin-on-accent: "#1e1e2e"
   catppuccin-danger: "#f38ba8"
-  connected: "#4ade80"
   window-close: "#ff5f57"
   window-minimize: "#febc2e"
   window-maximize: "#28c840"
@@ -79,13 +78,13 @@ rounded:
 spacing:
   row-inset: "4px"
   tile: "5px"
-  priority-gap: "6px"
+  priority-gap: "8px"
   compact: "8px"
   control-gap: "10px"
   regular: "12px"
-  panel-gap: "14px"
+  panel-gap: "16px"
   section: "16px"
-  champion-panel: "18px"
+  champion-panel: "20px"
   page-panel: "20px"
   shell: "24px"
   dialog: "28px"
@@ -96,15 +95,15 @@ components:
     typography: "{typography.body}"
     rounded: "{rounded.control}"
     padding: "0px 12px"
-    height: "34px"
+    height: "36px"
   button-compact:
     backgroundColor: "{colors.classic-subtle}"
     textColor: "{colors.classic-text}"
     typography: "{typography.body}"
     rounded: "{rounded.control}"
     padding: "0px"
-    width: "26px"
-    height: "34px"
+    width: "28px"
+    height: "36px"
   button-surface:
     backgroundColor: "{colors.classic-surface}"
     textColor: "{colors.classic-text}"
@@ -113,12 +112,12 @@ components:
     padding: "0px 12px"
     height: "28px"
   search-input:
-    backgroundColor: "{colors.classic-subtle}"
+    backgroundColor: "{colors.classic-surface}"
     textColor: "{colors.classic-text}"
     typography: "{typography.body}"
     rounded: "{rounded.control}"
     padding: "0px 12px"
-    height: "38px"
+    height: "36px"
   page-panel:
     backgroundColor: "{colors.classic-surface}"
     rounded: "{rounded.panel}"
@@ -165,13 +164,13 @@ application icon and the names `Catengar` and `League 助手` retain the identit
 recorded in [PRODUCT.md](PRODUCT.md). Five themes change the palette while
 keeping the same component shapes and hierarchy.
 
-This is a scan of `src/ui.rs`, the theme labels in `src/model.rs`, and window
-sizing in `src/platform.rs` on 2026-10-31. Evidence includes `home-classic-final.png`, `fix-warning-disabled-light.png`,
-`settings-minimum.png`, `logs-minimum.png`, `about-minimum.png`, and
-`details-light.png` under `.impeccable/review/`; the main-window captures use
-offline test champions. Their repeated feline portraits are fixture data, not a rule for
-real champion imagery. The floating Haidou page is external content and does
-not define this application's visual system.
+The 2026-10-31 Hallmark refinement follows the owner's practical, compact
+direction. `src/theme.rs` owns the shared palette, font, spacing, and sizing
+tokens; `src/ui.rs` composes the native controls. Before/after captures under
+`.hallmark/review/` use seven real locally cached champions in an isolated
+offline profile. This is not evidence of a live client connection. Earlier
+`.impeccable/review/` images document the previous layout. The floating Haidou
+page is external content and does not define this application's visual system.
 
 **Key Characteristics:**
 
@@ -206,13 +205,13 @@ version information, timestamps, and connection details.
 ### Status and fixed chrome
 
 `danger` is theme-specific and carries settings warnings and failed log entries.
-`connected` is the connected status dot; a disconnected dot uses `muted`.
+Connection status is stated in text in the footer.
 The red, amber, and green window controls retain their fixed colors in all
 themes. `dialog-scrim` dims the underlying app when About is open.
 
 **The Theme Roles Rule.** Resolve every normal surface, text, border, and state
-color through the selected palette. Fixed window controls and the connected
-status dot are the observed exceptions.
+color through the selected palette. Fixed window controls are the observed
+exceptions.
 
 The frontmatter component examples use Classic, the current default. Their
 palette roles translate directly to any other theme; those references do not
@@ -239,16 +238,19 @@ separately specified.
 
 The main native window opens at 1120 by 800 logical units and has a 880 by 720
 minimum, scaled by Windows DPI. There is no mobile layout or browser breakpoint
-system. The title bar is 40 units high. A padded shell stacks the app heading,
-page content, and persistent footer; primary content expands to use remaining
-space and owns its scrolling.
+system. The title bar is 40 units high. A 24-unit padded shell, capped at 1360
+units and centered, stacks the page heading, persistent Heroes/Logs/Settings
+navigation, page content, and connection footer. Primary content expands to use
+remaining space and owns its scrolling.
 
-The observed home panel places the flexible champion library beside a 270-unit
-priority column with a 20-unit gap. Library columns are calculated from available
-width in 92-unit increments, with at least two columns; the virtual row estimate
-is 122 units. The priority column remains fixed width. Theme choices wrap when
-needed. Settings and logs keep their content within the same rounded page-panel
-language rather than changing the global shell.
+Home places the automatic-selection, match-acceptance, and selection-policy
+controls in one toolbar above two peer panels. The flexible champion library
+sits beside a 300-unit priority column with a 16-unit gap. Library columns are
+calculated in 104-unit increments, between two and eight columns; the virtual
+row estimate is 144 units. Champion names stay visible below the portraits.
+Both panels scroll independently. Settings align categories on the left with
+their controls on the right, separated by rules; theme choices wrap when needed.
+Logs align local time, event type, and message columns below one toolbar.
 
 Spacing is a collection of observed values, not a fabricated strict grid. Use
 the frontmatter's shell, section, panel, and compact spacing roles in their
@@ -291,19 +293,21 @@ units. Disabled state must remain distinguishable from focus or selection.
 Compact priority actions inherit the same treatment. The library's top-right
 add/remove control is 28 units square; its checked glyph changes with selection.
 The centered `查看` action uses the surface variant below the portrait.
-Navigation uses ordinary `日志`, `设置`, and `返回` buttons in the shell header;
-there is no separate sidebar or tab-shaped navigation component.
+Persistent `英雄`, `日志`, and `设置` navigation uses the same control shape;
+the current destination has a subtle fill and selected accessibility state.
+Escape returns to Heroes, or closes About when it is open.
 
 ### Search field
 
-The search field uses the subtle fill, control radius, body text, muted
-placeholder, and accent caret. It fills the library column. The application
-does not specify a custom focus outline for the text input; native input
-behavior is not replaced by a CSS preview's assumptions.
+The search field uses the surface fill, control radius, body text, muted
+placeholder and border, and accent caret. It fills the library column, with an
+instant two-unit accent focus outline. Typing filters the real champion names
+and aliases and resets the virtual list to its top.
 
 ### Switch and policy checkbox
 
-The switch keeps its label separate from the pill. On uses `accent` with an
+The switch's label and pill form one focusable target at least 44 units high.
+On uses `accent` with an
 `on-accent` thumb; off uses `border` with a `muted` thumb. The thumb is 18 units
 square and moves 18 units between states. Switches and the policy checkbox use
 the same accent focus outline as buttons. The checkbox preserves its visible
@@ -321,8 +325,12 @@ a new component shape or typography.
 Panels provide surface containment. The library tile gives the portrait, the
 separate add/remove control, and `查看` distinct targets. Preserve that separation
 when extending tile content. Priority rows use a two-digit muted rank, a
-34-unit portrait, a one-line name, and compact up/down/remove actions. First and
+36-unit portrait, a one-line name, and compact up/down/remove actions. First and
 last reorder actions visibly disable where movement is unavailable.
+
+The round-only automatic-selection control remains a standalone draggable
+168-by-44 topmost button. It has no surrounding panel or title bar; main-window
+navigation and layout do not affect its visibility or round-scoped behavior.
 
 ### About, detail window, and notifications
 

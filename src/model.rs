@@ -134,19 +134,78 @@ pub fn own_champion(session: &Value) -> i32 {
         .map(|p| integer(&p["championId"]))
         .unwrap_or(0)
 }
-pub fn bench_ids(session: &Value) -> Vec<i32> {
-    session["benchChampions"]
-        .as_array()
-        .or_else(|| session["benchChampionIds"].as_array())
-        .into_iter()
-        .flatten()
-        .filter(|v| v["isAvailable"].as_bool() != Some(false))
-        .map(|v| integer(if v.is_object() { &v["championId"] } else { v }))
-        .filter(|id| *id > 0)
-        .take(64)
-        .collect()
+/// GAME_STARTING is the terminal LCU phase, not a countdown threshold.
+pub fn champion_changes_open(session: &Value) -> bool {
+    session["timer"]["phase"] != "GAME_STARTING"
+        && session["isSpectating"] != true
+        && session["localPlayerCellId"]
+            .as_i64()
+            .is_some_and(|id| id >= 0)
 }
-#[derive(Clone, Copy, Debug, PartialEq)]
+
+/// Runtime-only choice; never serialized into the player's saved preferences.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RoundPick {
+    pub game_id: i64,
+    pub in_selection: bool,
+    pub available: bool,
+    pub override_pick: Option<bool>,
+}
+impl RoundPick {
+    pub fn enter(&mut self, game_id: i64) {
+        if !self.in_selection || (self.game_id > 0 && game_id > 0 && self.game_id != game_id) {
+            *self = Self::default();
+        }
+        self.in_selection = true;
+        if game_id > 0 {
+            self.game_id = game_id;
+        }
+    }
+    pub fn effective(&self, mut prefs: Preferences) -> Preferences {
+        if self.in_selection
+            && let Some(enabled) = self.override_pick
+        {
+            prefs.auto_pick = enabled;
+            // Explicitly enabling this round resumes upgrades even when the
+            // saved one-shot policy already completed. Saved policy is untouched.
+            if enabled {
+                prefs.always_prioritize = true;
+            }
+        }
+        prefs
+    }
+    pub fn enabled(&self, prefs: &Preferences, completed: bool) -> bool {
+        let p = self.effective(prefs.clone());
+        p.auto_pick && (p.always_prioritize || !completed)
+    }
+    pub fn toggle(&mut self, prefs: &Preferences, completed: bool) -> Option<bool> {
+        if !self.available {
+            return None;
+        }
+        let enabled = !self.enabled(prefs, completed);
+        self.override_pick = Some(enabled);
+        Some(enabled)
+    }
+}
+pub fn bench_ids(session: &Value) -> Vec<i32> {
+    let mut ids = Vec::new();
+    for list in ["benchChampions", "benchChampionIds"] {
+        for entry in session[list].as_array().into_iter().flatten() {
+            let id = integer(if entry.is_object() {
+                &entry["championId"]
+            } else {
+                entry
+            });
+            // Availability flags and benchEnabled can lag behind the API. The
+            // session supplies candidates; the write response decides eligibility.
+            if id > 0 && !ids.contains(&id) && ids.len() < 64 {
+                ids.push(id);
+            }
+        }
+    }
+    ids
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Selection {
     pub champion: i32,
     pub action: Option<i32>,
@@ -158,47 +217,67 @@ pub fn choose(
     session: &Value,
     pickable: &[i32],
 ) -> Option<Selection> {
-    if !prefs.auto_pick || !aram(queue, mode) || session["isSpectating"].as_bool() == Some(true) {
-        return None;
-    }
+    selection_candidates(prefs, queue, mode, session, pickable, &[])
+        .into_iter()
+        .next()
+}
+pub fn own_pick_action(session: &Value) -> Option<i32> {
     let local = session["localPlayerCellId"].as_i64().filter(|v| *v >= 0)?;
+    session["actions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter(|action| {
+            action["type"] == "pick"
+                && action["actorCellId"].as_i64() == Some(local)
+                && action["completed"] != true
+        })
+        .find_map(|action| {
+            action["id"]
+                .as_i64()
+                .and_then(|id| i32::try_from(id).ok())
+                .filter(|id| *id >= 0)
+        })
+}
+pub fn selection_candidates(
+    prefs: &Preferences,
+    queue: i32,
+    mode: &str,
+    session: &Value,
+    pickable: &[i32],
+    subset: &[i32],
+) -> Vec<Selection> {
+    if !prefs.auto_pick || !aram(queue, mode) || !champion_changes_open(session) {
+        return vec![];
+    }
     let current = own_champion(session);
-    let bench = if session["benchEnabled"].as_bool() == Some(true) {
-        bench_ids(session)
-    } else {
-        vec![]
-    };
+    let bench = bench_ids(session);
+    let action = own_pick_action(session);
+    let mut choices = Vec::new();
     for &id in prefs.priority.iter().take(prefs.rank(current)) {
-        if current > 0 && bench.contains(&id) {
-            return Some(Selection {
+        if id <= 0 {
+            continue;
+        }
+        // Personal cards can still be swapped after the pick action completes,
+        // before they appear in the shared bench. Do not wait for the UI phase.
+        if current > 0 && (bench.contains(&id) || subset.contains(&id)) {
+            choices.push(Selection {
                 champion: id,
                 action: None,
             });
         }
-        if !pickable.contains(&id) {
-            continue;
-        }
-        for action in session["actions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_array)
-            .flatten()
+        if let Some(action) = action
+            && (pickable.contains(&id) || subset.contains(&id) || bench.contains(&id))
         {
-            if action["type"] == "pick"
-                && action["actorCellId"].as_i64() == Some(local)
-                && action["isInProgress"] == true
-                && action["completed"] != true
-                && let Some(action) = action["id"].as_i64().and_then(|id| i32::try_from(id).ok())
-            {
-                return Some(Selection {
-                    champion: id,
-                    action: Some(action),
-                });
-            }
+            choices.push(Selection {
+                champion: id,
+                action: Some(action),
+            });
         }
     }
-    None
+    choices
 }
 pub fn should_accept(enabled: bool, phase: &str, ready: &Value) -> bool {
     enabled

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-31T02:52:13.800404+00:00",
+  "generatedAt": "2026-10-31T05:53:11.632448+00:00",
   "title": "Design System: Catengar",
   "extensions": {
     "colorMeta": {
@@ -184,10 +184,6 @@
         "role": "status",
         "displayName": "Catppuccin Danger"
       },
-      "connected": {
-        "role": "status",
-        "displayName": "Connected"
-      },
       "window-close": {
         "role": "status",
         "displayName": "Window Close"
@@ -237,7 +233,7 @@
       "kind": "button",
       "description": "Native button: subtle fill, opacity feedback, disabled state, and accent focus outline. Preview uses Classic.",
       "html": "<div class=\"ds-stage\"><button class=\"ds-button\">检查更新</button></div>",
-      "css": ".ds-stage { padding:12px; background:#0a0a0a; color:#fafafa; font-family:'Microsoft YaHei UI', sans-serif; } .ds-button { box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; height:34px; padding:0 12px; border:0; border-radius:7px; background:#262626; color:#fafafa; font:14px 'Microsoft YaHei UI', sans-serif; cursor:pointer; } .ds-button:hover { opacity:.8; } .ds-button:active { opacity:.65; } .ds-button:focus-visible { outline:2px solid #d6b773; outline-offset:2px; } .ds-button:disabled { opacity:.35; cursor:default; } ",
+      "css": ".ds-stage { padding:12px; background:#0a0a0a; color:#fafafa; font-family:'Microsoft YaHei UI', sans-serif; } .ds-button { box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; height:36px; padding:0 12px; border:0; border-radius:7px; background:#262626; color:#fafafa; font:14px 'Microsoft YaHei UI', sans-serif; cursor:pointer; } .ds-button:hover { opacity:.8; } .ds-button:active { opacity:.65; } .ds-button:focus-visible { outline:2px solid #d6b773; outline-offset:2px; } .ds-button:disabled { opacity:.35; cursor:not-allowed; } ",
       "refersTo": "button-standard"
     },
     {
@@ -245,7 +241,7 @@
       "kind": "button",
       "description": "Standard button narrowed for up/down/remove actions; disabled movement stays visible.",
       "html": "<div class=\"ds-stage\"><button class=\"ds-button ds-compact\" aria-label=\"提高优先级\">↑</button> <button class=\"ds-button ds-compact\" disabled aria-label=\"降低优先级\">↓</button></div>",
-      "css": ".ds-stage { padding:12px; background:#0a0a0a; color:#fafafa; font-family:'Microsoft YaHei UI', sans-serif; } .ds-button { box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; height:34px; padding:0 12px; border:0; border-radius:7px; background:#262626; color:#fafafa; font:14px 'Microsoft YaHei UI', sans-serif; cursor:pointer; } .ds-button:hover { opacity:.8; } .ds-button:active { opacity:.65; } .ds-button:focus-visible { outline:2px solid #d6b773; outline-offset:2px; } .ds-button:disabled { opacity:.35; cursor:default; } .ds-compact { width:26px; padding:0; }",
+      "css": ".ds-stage { padding:12px; background:#0a0a0a; color:#fafafa; font-family:'Microsoft YaHei UI', sans-serif; } .ds-button { box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; height:36px; padding:0 12px; border:0; border-radius:7px; background:#262626; color:#fafafa; font:14px 'Microsoft YaHei UI', sans-serif; cursor:pointer; } .ds-button:hover { opacity:.8; } .ds-button:active { opacity:.65; } .ds-button:focus-visible { outline:2px solid #d6b773; outline-offset:2px; } .ds-button:disabled { opacity:.35; cursor:not-allowed; } .ds-compact { width:28px; padding:0; }",
       "refersTo": "button-compact"
     },
     {
@@ -253,7 +249,7 @@
       "kind": "button",
       "description": "The centered details action below a library portrait retains the panel fill.",
       "html": "<div class=\"ds-stage\"><button class=\"ds-button ds-surface\">查看</button></div>",
-      "css": ".ds-stage { padding:12px; background:#0a0a0a; color:#fafafa; font-family:'Microsoft YaHei UI', sans-serif; } .ds-button { box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; height:34px; padding:0 12px; border:0; border-radius:7px; background:#262626; color:#fafafa; font:14px 'Microsoft YaHei UI', sans-serif; cursor:pointer; } .ds-button:hover { opacity:.8; } .ds-button:active { opacity:.65; } .ds-button:focus-visible { outline:2px solid #d6b773; outline-offset:2px; } .ds-button:disabled { opacity:.35; cursor:default; } .ds-surface { height:28px; background:#171717; }",
+      "css": ".ds-stage { padding:12px; background:#0a0a0a; color:#fafafa; font-family:'Microsoft YaHei UI', sans-serif; } .ds-button { box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; height:36px; padding:0 12px; border:0; border-radius:7px; background:#262626; color:#fafafa; font:14px 'Microsoft YaHei UI', sans-serif; cursor:pointer; } .ds-button:hover { opacity:.8; } .ds-button:active { opacity:.65; } .ds-button:focus-visible { outline:2px solid #d6b773; outline-offset:2px; } .ds-button:disabled { opacity:.35; cursor:not-allowed; } .ds-surface { height:28px; background:#171717; }",
       "refersTo": "button-surface"
     },
     {
@@ -261,15 +257,15 @@
       "kind": "input",
       "description": "Native input fill, padding, placeholder, and caret. Browser focus behavior in this preview is not the native implementation.",
       "html": "<div class=\"ds-stage\"><input class=\"ds-search\" aria-label=\"搜索英雄\" placeholder=\"搜索英雄名称或英文名\" /></div>",
-      "css": ".ds-stage { padding:12px; background:#0a0a0a; color:#fafafa; font-family:'Microsoft YaHei UI', sans-serif; } .ds-search { height:38px; padding:0 12px; border:0; border-radius:7px; background:#262626; color:#fafafa; caret-color:#d6b773; font:14px 'Microsoft YaHei UI', sans-serif; } .ds-search::placeholder { color:#a1a1a1; opacity:1; }",
+      "css": ".ds-stage { padding:12px; background:#0a0a0a; color:#fafafa; font-family:'Microsoft YaHei UI', sans-serif; } .ds-search { height:36px; padding:0 12px; border:1px solid #a1a1a1; border-radius:7px; background:#171717; color:#fafafa; caret-color:#d6b773; font:14px 'Microsoft YaHei UI', sans-serif; } .ds-search::placeholder { color:#a1a1a1; opacity:1; } .ds-search:focus-visible { outline:2px solid #d6b773; outline-offset:2px; }",
       "refersTo": "search-input"
     },
     {
       "name": "Header navigation",
       "kind": "nav",
-      "description": "Header actions reuse the standard button. Secondary pages replace these actions with 返回.",
-      "html": "<div class=\"ds-stage\"><nav class=\"ds-nav\" aria-label=\"页面\"><button class=\"ds-button\">日志</button><button class=\"ds-button\">设置</button></nav></div>",
-      "css": ".ds-stage { padding:12px; background:#0a0a0a; color:#fafafa; font-family:'Microsoft YaHei UI', sans-serif; } .ds-button { box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; height:34px; padding:0 12px; border:0; border-radius:7px; background:#262626; color:#fafafa; font:14px 'Microsoft YaHei UI', sans-serif; cursor:pointer; } .ds-button:hover { opacity:.8; } .ds-button:active { opacity:.65; } .ds-button:focus-visible { outline:2px solid #d6b773; outline-offset:2px; } .ds-button:disabled { opacity:.35; cursor:default; } .ds-nav { display:flex; gap:8px; }"
+      "description": "Persistent Heroes, Logs, and Settings buttons share one navigation row; the active destination has a subtle fill.",
+      "html": "<div class=\"ds-stage\"><nav class=\"ds-nav\" aria-label=\"页面\"><button class=\"ds-button\" aria-current=\"page\">英雄</button><button class=\"ds-button\">日志</button><button class=\"ds-button\">设置</button></nav></div>",
+      "css": ".ds-stage { padding:12px; background:#0a0a0a; color:#fafafa; font-family:'Microsoft YaHei UI', sans-serif; } .ds-button { box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; height:36px; padding:0 12px; border:0; border-radius:7px; background:#262626; color:#fafafa; font:14px 'Microsoft YaHei UI', sans-serif; cursor:pointer; } .ds-button:hover { opacity:.8; } .ds-button:active { opacity:.65; } .ds-button:focus-visible { outline:2px solid #d6b773; outline-offset:2px; } .ds-button:disabled { opacity:.35; cursor:not-allowed; } .ds-nav { display:flex; gap:8px; }"
     },
     {
       "name": "Page panel",
@@ -282,9 +278,9 @@
     {
       "name": "Automation switch",
       "kind": "custom",
-      "description": "Native enabled switch and focus treatment. This static preview does not toggle or prove Windows keyboard support.",
+      "description": "The whole label-and-track row is one native focusable switch with a 44-unit minimum height; the static preview only documents appearance.",
       "html": "<div class=\"ds-stage\"><div class=\"ds-switch-row\"><span>自动选取英雄</span><button class=\"ds-switch\" role=\"switch\" aria-checked=\"true\" aria-label=\"自动选取英雄\"><span class=\"ds-thumb\"></span></button></div></div>",
-      "css": ".ds-stage { padding:12px; background:#0a0a0a; color:#fafafa; font-family:'Microsoft YaHei UI', sans-serif; } .ds-switch-row { display:flex; align-items:center; gap:12px; font:500 14px 'Microsoft YaHei UI', sans-serif; } .ds-switch { box-sizing:border-box; position:relative; width:42px; height:24px; padding:3px; border:0; border-radius:12px; background:#d6b773; } .ds-thumb { display:block; width:18px; height:18px; margin-left:18px; border-radius:9px; background:#181715; } .ds-switch:focus-visible { outline:2px solid #d6b773; outline-offset:2px; } .ds-switch[aria-checked=\"false\"] { background:#393939; } .ds-switch[aria-checked=\"false\"] .ds-thumb { margin-left:0; background:#a1a1a1; }",
+      "css": ".ds-stage { padding:12px; background:#0a0a0a; color:#fafafa; font-family:'Microsoft YaHei UI', sans-serif; } .ds-switch-row { min-height:44px; display:flex; align-items:center; gap:12px; font:500 14px 'Microsoft YaHei UI', sans-serif; } .ds-switch { box-sizing:border-box; position:relative; width:42px; height:24px; padding:3px; border:0; border-radius:12px; background:#d6b773; } .ds-thumb { display:block; width:18px; height:18px; margin-left:18px; border-radius:9px; background:#181715; } .ds-switch:focus-visible { outline:2px solid #d6b773; outline-offset:2px; } .ds-switch[aria-checked=\"false\"] { background:#393939; } .ds-switch[aria-checked=\"false\"] .ds-thumb { margin-left:0; background:#a1a1a1; }",
       "refersTo": "switch-on"
     },
     {
@@ -292,14 +288,14 @@
       "kind": "button",
       "description": "Standard buttons gain a one-unit border; the current theme uses the accent border.",
       "html": "<div class=\"ds-stage\"><button class=\"ds-button ds-theme\" aria-pressed=\"true\">经典金色</button></div>",
-      "css": ".ds-stage { padding:12px; background:#0a0a0a; color:#fafafa; font-family:'Microsoft YaHei UI', sans-serif; } .ds-button { box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; height:34px; padding:0 12px; border:0; border-radius:7px; background:#262626; color:#fafafa; font:14px 'Microsoft YaHei UI', sans-serif; cursor:pointer; } .ds-button:hover { opacity:.8; } .ds-button:active { opacity:.65; } .ds-button:focus-visible { outline:2px solid #d6b773; outline-offset:2px; } .ds-button:disabled { opacity:.35; cursor:default; } .ds-theme { border:1px solid #393939; } .ds-theme[aria-pressed=\"true\"] { border-color:#d6b773; }"
+      "css": ".ds-stage { padding:12px; background:#0a0a0a; color:#fafafa; font-family:'Microsoft YaHei UI', sans-serif; } .ds-button { box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; height:36px; padding:0 12px; border:0; border-radius:7px; background:#262626; color:#fafafa; font:14px 'Microsoft YaHei UI', sans-serif; cursor:pointer; } .ds-button:hover { opacity:.8; } .ds-button:active { opacity:.65; } .ds-button:focus-visible { outline:2px solid #d6b773; outline-offset:2px; } .ds-button:disabled { opacity:.35; cursor:not-allowed; } .ds-theme { border:1px solid #393939; } .ds-theme[aria-pressed=\"true\"] { border-color:#d6b773; }"
     },
     {
       "name": "Champion tile",
       "kind": "custom",
-      "description": "Library portrait fallback and separate selection/detail targets; the initials preview uses the existing missing-image behavior.",
-      "html": "<div class=\"ds-stage\"><div class=\"ds-tile\"><div class=\"ds-portrait\">英雄<button class=\"ds-button ds-add\" aria-label=\"添加英雄\">+</button></div><button class=\"ds-button ds-details\">查看</button></div></div>",
-      "css": ".ds-stage { padding:12px; background:#0a0a0a; color:#fafafa; font-family:'Microsoft YaHei UI', sans-serif; } .ds-button { box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; height:34px; padding:0 12px; border:0; border-radius:7px; background:#262626; color:#fafafa; font:14px 'Microsoft YaHei UI', sans-serif; cursor:pointer; } .ds-button:hover { opacity:.8; } .ds-button:active { opacity:.65; } .ds-button:focus-visible { outline:2px solid #d6b773; outline-offset:2px; } .ds-button:disabled { opacity:.35; cursor:default; } .ds-tile { box-sizing:border-box; display:flex; flex-direction:column; align-items:center; gap:5px; height:122px; padding:5px; } .ds-portrait { position:relative; display:flex; align-items:center; justify-content:center; width:76px; height:76px; border-radius:7px; background:#262626; color:#a1a1a1; font-size:12px; } .ds-add { position:absolute; top:-2px; right:-2px; width:28px; height:28px; padding:0; } .ds-details { height:28px; background:#171717; }",
+      "description": "Visible champion name below the portrait, with independent selection and details actions.",
+      "html": "<div class=\"ds-stage\"><div class=\"ds-tile\"><div class=\"ds-portrait\">英雄<button class=\"ds-button ds-add\" aria-label=\"添加英雄\">+</button></div><span>英雄名称</span><button class=\"ds-button ds-details\">查看</button></div></div>",
+      "css": ".ds-stage { padding:12px; background:#0a0a0a; color:#fafafa; font-family:'Microsoft YaHei UI', sans-serif; } .ds-button { box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; height:36px; padding:0 12px; border:0; border-radius:7px; background:#262626; color:#fafafa; font:14px 'Microsoft YaHei UI', sans-serif; cursor:pointer; } .ds-button:hover { opacity:.8; } .ds-button:active { opacity:.65; } .ds-button:focus-visible { outline:2px solid #d6b773; outline-offset:2px; } .ds-button:disabled { opacity:.35; cursor:not-allowed; } .ds-tile { box-sizing:border-box; display:flex; flex-direction:column; align-items:center; gap:8px; height:144px; padding:5px; } .ds-portrait { position:relative; display:flex; align-items:center; justify-content:center; width:76px; height:76px; border-radius:7px; background:#262626; color:#a1a1a1; font-size:12px; } .ds-add { position:absolute; top:-2px; right:-2px; width:28px; height:28px; padding:0; } .ds-details { height:28px; background:#171717; }",
       "refersTo": "portrait-library"
     },
     {
@@ -307,12 +303,12 @@
       "kind": "custom",
       "description": "Rank, small portrait fallback, one-line champion name, and independent reorder/remove actions.",
       "html": "<div class=\"ds-stage\"><div class=\"ds-row\"><span class=\"ds-rank\">01</span><span class=\"ds-small-portrait\">英雄</span><span class=\"ds-name\">英雄名称</span><button class=\"ds-button ds-compact\" disabled aria-label=\"提高优先级\">↑</button><button class=\"ds-button ds-compact\" aria-label=\"降低优先级\">↓</button><button class=\"ds-button ds-compact\" aria-label=\"移除优先英雄\">×</button></div></div>",
-      "css": ".ds-stage { padding:12px; background:#0a0a0a; color:#fafafa; font-family:'Microsoft YaHei UI', sans-serif; } .ds-button { box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; height:34px; padding:0 12px; border:0; border-radius:7px; background:#262626; color:#fafafa; font:14px 'Microsoft YaHei UI', sans-serif; cursor:pointer; } .ds-button:hover { opacity:.8; } .ds-button:active { opacity:.65; } .ds-button:focus-visible { outline:2px solid #d6b773; outline-offset:2px; } .ds-button:disabled { opacity:.35; cursor:default; } .ds-row { display:flex; align-items:center; gap:7px; padding:4px 0; width:270px; } .ds-rank { width:22px; color:#a1a1a1; font-size:12px; } .ds-small-portrait { display:flex; align-items:center; justify-content:center; width:34px; height:34px; border-radius:7px; background:#262626; color:#a1a1a1; font-size:12px; } .ds-name { flex:1; overflow:hidden; white-space:nowrap; font-size:14px; } .ds-compact { width:26px; padding:0; }"
+      "css": ".ds-stage { padding:12px; background:#0a0a0a; color:#fafafa; font-family:'Microsoft YaHei UI', sans-serif; } .ds-button { box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; height:36px; padding:0 12px; border:0; border-radius:7px; background:#262626; color:#fafafa; font:14px 'Microsoft YaHei UI', sans-serif; cursor:pointer; } .ds-button:hover { opacity:.8; } .ds-button:active { opacity:.65; } .ds-button:focus-visible { outline:2px solid #d6b773; outline-offset:2px; } .ds-button:disabled { opacity:.35; cursor:not-allowed; } .ds-row { display:flex; align-items:center; gap:8px; padding:8px 0; width:260px; } .ds-rank { width:20px; color:#a1a1a1; font-size:12px; } .ds-small-portrait { display:flex; align-items:center; justify-content:center; width:36px; height:36px; border-radius:7px; background:#262626; color:#a1a1a1; font-size:12px; } .ds-name { flex:1; overflow:hidden; white-space:nowrap; font-size:14px; } .ds-compact { width:28px; padding:0; }"
     }
   ],
   "narrative": {
     "northStar": "not established.",
-    "overview": "The native Windows interface uses compact Chinese controls, rounded tonal panels, champion portraits, and a persistent connection footer. The feline application icon and the names `Catengar` and `League 助手` retain the identity recorded in [PRODUCT.md](PRODUCT.md). Five themes change the palette while keeping the same component shapes and hierarchy.  This is a scan of `src/ui.rs`, the theme labels in `src/model.rs`, and window sizing in `src/platform.rs` on 2026-10-31. Evidence includes `home-classic-final.png`, `fix-warning-disabled-light.png`, `settings-minimum.png`, `logs-minimum.png`, `about-minimum.png`, and `details-light.png` under `.impeccable/review/`; the main-window captures use offline test champions. Their repeated feline portraits are fixture data, not a rule for real champion imagery. The floating Haidou page is external content and does not define this application's visual system.",
+    "overview": "Native Windows UI refined for practical, compact daily use. Shared tokens live in src/theme.rs. Persistent Heroes, Logs, and Settings navigation, a grouped automation toolbar, named champion tiles, independent priority scrolling, aligned settings categories, and a column-based activity log preserve the five existing themes and all handlers. Real cached champions are used in the isolated native captures under .hallmark/review/. The round-only topmost control remains a single draggable button.",
     "keyCharacteristics": [
       "One Chinese UI font with a small heading, body, and metadata hierarchy.",
       "Tonal background, panel, and control layers shared by five palettes.",
@@ -323,7 +319,7 @@
     "rules": [
       {
         "name": "The Theme Roles Rule",
-        "body": "Resolve every normal surface, text, border, and state color through the selected palette. Fixed window controls and the connected status dot are the observed exceptions.",
+        "body": "Resolve every normal surface, text, border, and state color through the selected palette in src/theme.rs. Fixed window controls retain their existing colors.",
         "section": "colors"
       }
     ],

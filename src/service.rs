@@ -31,6 +31,7 @@ pub struct State {
     pub prefs: Preferences,
     pub snapshot: Snapshot,
     pub update: updater::State,
+    pub round_pick: RoundPick,
 }
 #[derive(Clone, Copy)]
 pub enum Command {
@@ -44,6 +45,7 @@ pub struct Service {
     pub state: Arc<Mutex<State>>,
     pub journal: Journal,
     pub notices: Mutex<NoticeQueue>,
+    pub round_pick: Mutex<RoundPick>,
     tx: Sender<Command>,
     thread: Mutex<Option<thread::JoinHandle<()>>>,
     journal_thread: Mutex<Option<thread::JoinHandle<()>>>,
@@ -71,9 +73,11 @@ impl Service {
                 prefs,
                 snapshot,
                 update: updater::previous_result(&root),
+                round_pick: RoundPick::default(),
             })),
             journal,
             notices: Mutex::new(NoticeQueue::default()),
+            round_pick: Mutex::new(RoundPick::default()),
             tx,
             thread: Mutex::new(None),
             journal_thread: Mutex::new(Some(journal_thread)),
@@ -85,7 +89,28 @@ impl Service {
         Ok(app)
     }
     pub fn read(&self) -> State {
-        self.state.lock().unwrap().clone()
+        let mut state = self.state.lock().unwrap().clone();
+        state.round_pick = self.round_pick.lock().unwrap().clone();
+        state
+    }
+    pub fn toggle_round_pick(&self) {
+        let state = self.read();
+        if let Some(enabled) = self
+            .round_pick
+            .lock()
+            .unwrap()
+            .toggle(&state.prefs, state.snapshot.pick_completed)
+        {
+            self.journal.log(
+                "pick",
+                "info",
+                if enabled {
+                    "本局已开启自动抢英雄；下局恢复原设置。"
+                } else {
+                    "本局已暂停自动抢英雄；下局恢复原设置。"
+                },
+            );
+        }
     }
     pub fn command(&self, c: Command) {
         let _ = self.tx.send(c);
@@ -105,6 +130,8 @@ impl Service {
             );
         }
         if p.auto_pick != state.prefs.auto_pick {
+            // A direct edit to the main switch is also an explicit user choice.
+            self.round_pick.lock().unwrap().override_pick = None;
             self.journal.log(
                 "pick",
                 "info",
@@ -365,16 +392,20 @@ impl Service {
                 let live = c.websocket.load(Ordering::Acquire);
                 snapshot.websocket = live;
                 let result = (|| -> Result<()> {
+                    let phase_interval = if prefs.auto_accept
+                        || prefs.auto_pick
+                        || matches!(
+                            snapshot.phase.as_str(),
+                            "Matchmaking" | "ReadyCheck" | "ChampSelect"
+                        ) {
+                        1000
+                    } else {
+                        15000
+                    };
+                    next_phase = next_phase.min(now + phase_interval);
                     if live && now >= next_phase {
                         c.get(transport::PHASE, true)?;
-                        next_phase = now
-                            + if prefs.auto_accept
-                                || matches!(snapshot.phase.as_str(), "Matchmaking" | "ReadyCheck")
-                            {
-                                1000
-                            } else {
-                                15000
-                            };
+                        next_phase = now + phase_interval;
                     }
                     if live
                         && snapshot.phase == "ReadyCheck"
@@ -394,11 +425,12 @@ impl Service {
                         next_side = now + 250;
                     }
                     let connected = snapshot.connected;
-                    engine.tick(
+                    engine.tick_with_control(
                         c,
                         &|| self.state.lock().unwrap().prefs.clone(),
                         &mut snapshot,
                         now,
+                        &self.round_pick,
                     )?;
                     if !connected {
                         self.journal.log(
@@ -469,6 +501,9 @@ impl Service {
             }
             for entry in engine.logs.drain(..) {
                 self.journal.log(&entry.kind, &entry.level, entry.message);
+            }
+            if !snapshot.connected {
+                self.round_pick.lock().unwrap().available = false;
             }
             self.publish(&snapshot);
             if let Some(c) = &client {

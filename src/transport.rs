@@ -20,9 +20,10 @@ pub const GAME: &str = "/lol-gameflow/v1/session";
 pub const READY: &str = "/lol-matchmaking/v1/ready-check";
 pub const SESSION: &str = "/lol-champ-select/v1/session";
 pub const PICKABLE: &str = "/lol-champ-select/v1/pickable-champion-ids";
+pub const SUBSET: &str = "/lol-lobby-team-builder/champ-select/v1/subset-champion-list";
 pub const PROFILE: &str = "/lol-summoner/v1/current-summoner";
 pub const CONVERSATIONS: &str = "/lol-chat/v1/conversations";
-const SLOTS: [&str; 6] = [PHASE, GAME, READY, SESSION, PICKABLE, PROFILE];
+const SLOTS: [&str; 7] = [PHASE, GAME, READY, SESSION, PICKABLE, SUBSET, PROFILE];
 fn conversation_event(path: &str) -> bool {
     path == CONVERSATIONS
         || path
@@ -63,6 +64,7 @@ pub struct Cache {
     pub revision: u64,
     pub chat_revision: u64,
     values: HashMap<String, Response>,
+    versions: HashMap<String, u64>,
 }
 impl Cache {
     pub fn apply(&mut self, path: &str, response: Response) {
@@ -75,16 +77,20 @@ impl Cache {
         if !SLOTS.contains(&path) {
             return;
         }
+        self.revision = self.revision.wrapping_add(1);
         if path == PHASE && self.values.get(PHASE).map(|v| &v.data) != Some(&response.data) {
-            for slot in [GAME, READY, SESSION, PICKABLE] {
+            for slot in [GAME, READY, SESSION, PICKABLE, SUBSET] {
                 self.values.remove(slot);
+                self.versions.insert(slot.into(), self.revision);
             }
         }
-        self.revision = self.revision.wrapping_add(1);
+        self.versions.insert(path.into(), self.revision);
         self.values.insert(path.into(), response);
     }
     pub fn reconcile(&mut self, path: &str, response: Response, revision: u64) -> Response {
-        if self.revision == revision {
+        // An unrelated profile/session timer event must not discard a fresh
+        // card-list response. A newer update of this resource or phase wins.
+        if self.versions.get(path).copied().unwrap_or(0) <= revision {
             self.apply(path, response.clone());
             return response;
         }
@@ -97,6 +103,9 @@ impl Cache {
         self.revision = self.revision.wrapping_add(1);
         self.chat_revision = self.chat_revision.wrapping_add(1);
         self.values.clear();
+        for slot in SLOTS {
+            self.versions.insert(slot.into(), self.revision);
+        }
     }
 }
 pub struct Client {

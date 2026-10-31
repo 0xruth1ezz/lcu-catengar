@@ -1,0 +1,43 @@
+{
+  "scanned": "2026-10-31",
+  "scope": "app",
+  "framework": "Rust + NSH / Windows",
+  "findings": {
+    "fonts": "Microsoft YaHei UI, DESIGN.md:221; src/ui.rs:278",
+    "palette": "Five locked theme roles, DESIGN.md:184; src/ui.rs:23",
+    "motion": "Instant state changes, native focus; src/ui.rs:100",
+    "spacing": "Compact controls and independent library/priority scroll, DESIGN.md:238; src/ui.rs:384"
+  },
+  "preserve": [
+    "Chinese identity and local icon",
+    "five palettes and font",
+    "all handlers and round control",
+    "previous uncommitted functional work"
+  ],
+  "introduce": [
+    "shared native theme tokens",
+    "clear automation toolbar",
+    "named champion grid",
+    "legible priority rows",
+    "grouped settings and log layout"
+  ],
+  "baseline": {
+    "src/ui.rs": "b2c2471a66643b956ade93c231b019783ff5fa2a0765d9c48a76bc43204cc1b2",
+    "src/platform.rs": "7d87644a7d0326552f4dd20dcdceb83e471ad5e13942e9deacecfe40160b1305"
+  },
+  "native_exceptions": [
+    "Shipping UI is native Rust + NSH. src/theme.rs is the native token block; no CSS is shipped. Web-only sloplint rendering cannot validate this app; use actual native captures and interaction checks."
+  ],
+  "material": {
+    "real": [
+      "local icon",
+      "LCU-cached champion names and portraits",
+      "existing actions"
+    ],
+    "absent": [
+      "new claims",
+      "marketing metrics",
+      "testimonials"
+    ]
+  }
+}

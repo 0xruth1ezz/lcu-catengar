@@ -6,6 +6,7 @@ pub mod notifications;
 pub mod platform;
 pub mod service;
 pub mod storage;
+mod theme;
 pub mod transport;
 pub mod ui;
 pub mod updater;

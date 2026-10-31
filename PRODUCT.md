@@ -59,8 +59,8 @@ Champion details additionally display the public Haidou champion page on demand.
   and uses no client credentials.
 - Match acceptance and champion selection have separate switches. Both start off
   on first run; subsequent launches restore saved preferences.
-- The automatic selection switch leads the entire champion panel; preferences
-  remain editable while it is off. Directly below it, the checkbox
+- The home toolbar groups automatic selection, match acceptance, and the policy
+  checkbox; preferences remain editable while automation is off. The checkbox
   "总是按照优先顺序选取英雄" defaults on and saves as `always_prioritize`; old settings
   without that field also default on. Checked means continued priority upgrades;
   unchecked means stopping for the round after a confirmed automatic selection.
@@ -68,11 +68,25 @@ Champion details additionally display the public Haidou champion page on demand.
   connection and automation history accessible without crowding the main task.
   Logs persist locally across restarts, cover every historical record through
   pagination, and can be cleared without resetting preferences or cached assets.
+- Persistent Heroes, Logs, and Settings navigation keeps these three tasks
+  directly accessible. The hero library shows names below portraits beside an
+  independently scrolling priority list. The compact layout supports the native
+  880-by-720 minimum window while retaining all five existing themes.
 - Closing the main window hides it to the system tray and leaves automation
   running. The tray provides restore and full-exit actions. Repeated launches
   restore the existing instance.
 - Successful actions produce brief, dismissible application notifications that
   do not take focus, including while the main window is hidden.
+- Supported champion selection also shows one topmost button at the current
+  screen's right center, without a surrounding panel or title bar. Click it to
+  pause or enable automatic selection for this round; drag the button itself to
+  reposition it without toggling. Position is remembered, while the runtime
+  override is cleared on a verified round exit or changed game ID. It survives
+  same-round reconnects. Explicitly enabling the round resumes continuous
+  priority upgrades even when saved automation is off or one-shot selection has
+  already completed. Saved switches and policy remain unchanged. The button
+  remains available while paused and disappears at LCU `GAME_STARTING`, selection
+  exit, or disconnection. It does not use the UI countdown as a cutoff.
 - Check the project's published stable GitHub releases automatically after
   startup and periodically, with a passive notice for a newer version. Settings
   offers manual checking and the explicit "更新并重启" action; downloading,

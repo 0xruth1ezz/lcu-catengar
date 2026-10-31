@@ -260,14 +260,14 @@ fn higher_priority_held_champion_is_kept() {
     );
 }
 #[test]
-fn bench_availability_overrides_legacy_list() {
+fn bench_candidates_include_entries_despite_ui_availability_hints() {
     let mut s = session(22);
     s["benchChampions"] =
         json!([{"championId":107,"isAvailable":false},{"championId":103,"isAvailable":true}]);
-    assert_eq!(bench_ids(&s), vec![103]);
+    assert_eq!(bench_ids(&s), vec![107, 103, 22]);
     assert_eq!(
         choose(&prefs(), 450, "ARAM", &s, &[]).unwrap().champion,
-        103
+        107
     );
 }
 #[test]
@@ -283,11 +283,17 @@ fn bench_does_not_wait_for_client_animation() {
     );
 }
 #[test]
-fn card_pick_requires_own_active_unfinished_action_and_pickable_id() {
+fn card_pick_requires_own_unfinished_action_and_candidate_id() {
     let mut s = session(0);
+    s["benchChampionIds"] = json!([]);
     s["actions"] =
         json!([[{"id":4,"actorCellId":0,"type":"pick","isInProgress":true,"completed":false}]]);
     assert!(choose(&prefs(), 450, "ARAM", &s, &[]).is_none());
+    assert_eq!(
+        choose(&prefs(), 450, "ARAM", &s, &[107]).unwrap().action,
+        Some(4)
+    );
+    s["actions"][0][0]["isInProgress"] = json!(false);
     assert_eq!(
         choose(&prefs(), 450, "ARAM", &s, &[107]).unwrap().action,
         Some(4)
@@ -414,6 +420,7 @@ fn new_64_bit_game_id_rearms_round() {
 fn failed_and_unconfirmed_picks_remain_retryable() {
     for status in [409, 204] {
         let mut f = Fake::select(22);
+        f.values.get_mut(SESSION).unwrap()["benchChampionIds"] = json!([107]);
         f.status = status;
         let mut e = Engine::default();
         let mut s = Snapshot::default();

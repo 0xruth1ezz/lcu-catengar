@@ -6,5 +6,6 @@ zig-out/
 *.log
 artifacts/
 .impeccable/review/
+.hallmark/review/
 target/
 __pycache__/

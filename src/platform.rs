@@ -23,7 +23,12 @@ use windows::{
             LibraryLoader::GetModuleHandleW,
             Ole::{OleInitialize, OleUninitialize},
         },
-        UI::{HiDpi::*, Shell::*, WindowsAndMessaging::*},
+        UI::{
+            HiDpi::*,
+            Input::KeyboardAndMouse::{ReleaseCapture, SetCapture},
+            Shell::*,
+            WindowsAndMessaging::*,
+        },
     },
     core::{HSTRING, PCWSTR, w},
 };
@@ -32,6 +37,12 @@ static ICON: OnceLock<PathBuf> = OnceLock::new();
 static DETAIL: Mutex<Option<Champion>> = Mutex::new(None);
 static REQUEST: Mutex<Option<Champion>> = Mutex::new(None);
 static TOAST: Mutex<String> = Mutex::new(String::new());
+static PICK_DRAG: Mutex<Option<PickDrag>> = Mutex::new(None);
+struct PickDrag {
+    cursor: POINT,
+    origin: POINT,
+    moved: bool,
+}
 static INSTANCE_RESTORE: OnceLock<u32> = OnceLock::new();
 pub fn icon_path() -> &'static PathBuf {
     ICON.get().expect("icon initialized")
@@ -99,10 +110,10 @@ struct Placement {
     height: i32,
 }
 impl Placement {
-    fn valid(&self) -> bool {
+    fn valid(&self, min_height: i32) -> bool {
         self.version == 1
             && (100..=32768).contains(&self.width)
-            && (100..=32768).contains(&self.height)
+            && (min_height..=32768).contains(&self.height)
             && (-131072..=131072).contains(&self.left)
             && (-131072..=131072).contains(&self.top)
     }
@@ -118,7 +129,7 @@ impl Placement {
         }
     }
 }
-unsafe fn save_placement(hwnd: HWND) {
+unsafe fn save_placement(hwnd: HWND, filename: &str) {
     unsafe {
         if IsIconic(hwnd).as_bool() || IsZoomed(hwnd).as_bool() {
             return;
@@ -132,22 +143,26 @@ unsafe fn save_placement(hwnd: HWND) {
                 width: r.right - r.left,
                 height: r.bottom - r.top,
             };
-            let path = service::global().read().snapshot.root.join("window.json");
+            let path = service::global().read().snapshot.root.join(filename);
             if let Ok(bytes) = serde_json::to_vec(&p) {
                 let _ = storage::atomic_write(&path, &bytes);
             }
         }
     }
 }
-unsafe fn load_placement(hwnd: HWND, root: &std::path::Path) {
+unsafe fn load_placement(hwnd: HWND, root: &std::path::Path, filename: &str) {
     unsafe {
-        let Ok(bytes) = storage::read_bounded(&root.join("window.json"), 4096) else {
+        let Ok(bytes) = storage::read_bounded(&root.join(filename), 4096) else {
             return;
         };
         let Ok(p) = serde_json::from_slice::<Placement>(&bytes) else {
             return;
         };
-        if !p.valid() {
+        if !p.valid(if filename == "pick-control-window.json" {
+            32
+        } else {
+            100
+        }) {
             return;
         }
         let r = RECT {
@@ -184,9 +199,17 @@ unsafe extern "system" fn host_proc(
     kind: usize,
 ) -> LRESULT {
     unsafe {
+        if kind == 3
+            && let Some(result) = pick_control_pointer(hwnd, msg, lparam)
+        {
+            return result;
+        }
         if msg == WM_CLOSE {
+            if kind == 3 {
+                return LRESULT(0); // This control lives for the selection phase.
+            }
             if kind == 0 {
-                save_placement(hwnd);
+                save_placement(hwnd, "window.json");
                 let _ = ShowWindow(hwnd, SW_HIDE);
             } else {
                 let _ = ShowWindow(hwnd, SW_HIDE);
@@ -198,7 +221,11 @@ unsafe extern "system" fn host_proc(
             return LRESULT(0);
         }
         if msg == WM_EXITSIZEMOVE && kind == 0 {
-            save_placement(hwnd);
+            save_placement(hwnd, "window.json");
+        }
+        if kind == 3 && matches!(msg, WM_EXITSIZEMOVE | WM_DISPLAYCHANGE) {
+            keep_control_on_screen(hwnd);
+            save_placement(hwnd, "pick-control-window.json");
         }
         if kind == 0 && msg == WM_GETMINMAXINFO {
             let info = &mut *(lparam.0 as *mut MINMAXINFO);
@@ -238,7 +265,7 @@ unsafe extern "system" fn host_proc(
                 }
             }
         }
-        if kind == 2 && msg == WM_MOUSEACTIVATE {
+        if matches!(kind, 2 | 3) && msg == WM_MOUSEACTIVATE {
             return LRESULT(MA_NOACTIVATE as isize);
         }
         if msg == TRAY {
@@ -265,7 +292,7 @@ unsafe extern "system" fn host_proc(
                         if selected == OPEN {
                             restore(hwnd);
                         } else if selected == EXIT {
-                            save_placement(hwnd);
+                            save_placement(hwnd, "window.json");
                             PostQuitMessage(0);
                         }
                         let _ = DestroyMenu(menu);
@@ -357,6 +384,158 @@ where
     view.load(App::Rust(Root::of::<T>()));
     Ok(view)
 }
+unsafe fn keep_control_on_screen(hwnd: HWND) {
+    unsafe {
+        let mut rect = RECT::default();
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetWindowRect(hwnd, &mut rect).is_ok()
+            && GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info)
+                .as_bool()
+        {
+            let p = Placement {
+                version: 1,
+                left: rect.left,
+                top: rect.top,
+                width: rect.right - rect.left,
+                height: rect.bottom - rect.top,
+            }
+            .visible(info.rcWork);
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                p.left,
+                p.top,
+                p.width,
+                p.height,
+                SWP_NOACTIVATE,
+            );
+        }
+    }
+}
+
+unsafe fn pick_control_pointer(hwnd: HWND, msg: u32, lparam: LPARAM) -> Option<LRESULT> {
+    unsafe {
+        let mut point = POINT {
+            x: (lparam.0 as u16 as i16) as i32,
+            y: ((lparam.0 >> 16) as u16 as i16) as i32,
+        };
+        match msg {
+            WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
+                let mut rect = RECT::default();
+                let _ = GetWindowRect(hwnd, &mut rect);
+                let _ = ClientToScreen(hwnd, &mut point);
+                *PICK_DRAG.lock().unwrap() = Some(PickDrag {
+                    cursor: point,
+                    origin: POINT {
+                        x: rect.left,
+                        y: rect.top,
+                    },
+                    moved: false,
+                });
+                SetCapture(hwnd);
+                Some(LRESULT(0))
+            }
+            WM_MOUSEMOVE => {
+                let mut drag = PICK_DRAG.lock().unwrap();
+                if let Some(drag) = drag.as_mut() {
+                    let _ = ClientToScreen(hwnd, &mut point);
+                    let dx = point.x - drag.cursor.x;
+                    let dy = point.y - drag.cursor.y;
+                    let threshold = GetSystemMetricsForDpi(SM_CXDRAG, GetDpiForWindow(hwnd)).max(4);
+                    drag.moved |= dx.abs() >= threshold || dy.abs() >= threshold;
+                    if drag.moved {
+                        let _ = SetWindowPos(
+                            hwnd,
+                            None,
+                            drag.origin.x + dx,
+                            drag.origin.y + dy,
+                            0,
+                            0,
+                            SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE,
+                        );
+                        return Some(LRESULT(0));
+                    }
+                }
+                None
+            }
+            WM_LBUTTONUP => {
+                let drag = PICK_DRAG.lock().unwrap().take();
+                let _ = ReleaseCapture();
+                if let Some(drag) = drag {
+                    if drag.moved {
+                        keep_control_on_screen(hwnd);
+                        save_placement(hwnd, "pick-control-window.json");
+                    } else {
+                        service::global().toggle_round_pick();
+                    }
+                }
+                Some(LRESULT(0))
+            }
+            WM_CAPTURECHANGED | WM_CANCELMODE | WM_DESTROY => {
+                *PICK_DRAG.lock().unwrap() = None;
+                if msg == WM_CANCELMODE {
+                    let _ = ReleaseCapture();
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+}
+
+unsafe fn show_pick_control(main: HWND, root: &std::path::Path) -> Result<Rc<AppView>> {
+    unsafe {
+        let control = surface::<crate::ui::PickControl>("Catengar · 本局自动抢英雄", (168, 44), 3)?;
+        let hwnd = control.hwnd();
+        SetWindowLongPtrW(hwnd, GWL_STYLE, WS_POPUP.0 as isize);
+        SetWindowLongPtrW(
+            hwnd,
+            GWL_EXSTYLE,
+            (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST).0 as isize,
+        );
+        let foreground = GetForegroundWindow();
+        let anchor = if foreground.0.is_null() {
+            main
+        } else {
+            foreground
+        };
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        let _ = GetMonitorInfoW(
+            MonitorFromWindow(anchor, MONITOR_DEFAULTTONEAREST),
+            &mut info,
+        );
+        let scale = GetDpiForWindow(anchor) as f32 / 96.;
+        let width = (168. * scale) as i32;
+        let height = (44. * scale) as i32;
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            info.rcWork.right - width - 16,
+            info.rcWork.top + (info.rcWork.bottom - info.rcWork.top - height) / 2,
+            width,
+            height,
+            SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+        load_placement(hwnd, root, "pick-control-window.json");
+        keep_control_on_screen(hwnd);
+        let round = DWMWCP_ROUND;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            (&round as *const DWM_WINDOW_CORNER_PREFERENCE).cast(),
+            std::mem::size_of_val(&round) as u32,
+        );
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        Ok(control)
+    }
+}
+
 pub fn run(root: PathBuf, offline: bool) -> Result<()> {
     std::fs::create_dir_all(&root)?;
     use sha2::{Digest, Sha256};
@@ -434,12 +613,13 @@ pub fn run(root: PathBuf, offline: bool) -> Result<()> {
                     (&round as *const DWM_WINDOW_CORNER_PREFERENCE).cast(),
                     std::mem::size_of_val(&round) as u32,
                 );
-                load_placement(hwnd, &root);
+                load_placement(hwnd, &root, "window.json");
                 add_tray(hwnd);
                 main.show();
                 SetTimer(Some(hwnd), 1, 100, None);
                 let mut details: Option<Rc<AppView>> = None;
                 let mut toast: Option<(Rc<AppView>, Instant)> = None;
+                let mut pick_control: Option<Rc<AppView>> = None;
                 let mut msg = MSG::default();
                 while GetMessageW(&mut msg, None, 0, 0).as_bool() {
                     let _ = TranslateMessage(&msg);
@@ -449,6 +629,14 @@ pub fn run(root: PathBuf, offline: bool) -> Result<()> {
                     }
                     if service::global().exit.load(Ordering::Acquire) {
                         break;
+                    }
+                    if service::global().read().round_pick.available {
+                        if pick_control.is_none() {
+                            pick_control = Some(show_pick_control(hwnd, &root)?);
+                        }
+                    } else if let Some(control) = pick_control.take() {
+                        control.stop();
+                        let _ = DestroyWindow(control.hwnd());
                     }
                     if details
                         .as_ref()
@@ -541,6 +729,11 @@ pub fn run(root: PathBuf, offline: bool) -> Result<()> {
                     v.stop();
                     let _ = DestroyWindow(v.hwnd());
                 }
+                if let Some(control) = pick_control {
+                    save_placement(control.hwnd(), "pick-control-window.json");
+                    control.stop();
+                    let _ = DestroyWindow(control.hwnd());
+                }
                 main.stop();
                 let _ = DestroyWindow(hwnd);
                 drop(main);
@@ -572,6 +765,6 @@ mod tests {
             bottom: 1040,
         });
         assert_eq!((p.left, p.top), (0, 240));
-        assert!(p.valid());
+        assert!(p.valid(100));
     }
 }

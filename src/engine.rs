@@ -3,11 +3,14 @@ use crate::{
     journal::Entry,
     model::*,
     notifications::Notice,
-    transport::{Api, CONVERSATIONS, GAME, PHASE, PICKABLE, READY, SESSION},
+    transport::{Api, CONVERSATIONS, GAME, PHASE, PICKABLE, READY, SESSION, SUBSET},
 };
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Mutex,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct Retry {
@@ -59,15 +62,22 @@ struct Side {
 pub struct Engine {
     pub completed: bool,
     pub game_id: i64,
-    pending: Option<(i32, u64)>,
+    pending: Vec<PendingPick>,
+    next_pick_refresh: u64,
+    pick_rate_limit_until: u64,
     accept_done: bool,
-    pick_retry: Retry,
+    pick_retry: HashMap<Selection, u64>,
     accept_retry: Retry,
     audit: BTreeMap<i32, Audit>,
     side: Side,
     pub logs: Vec<Entry>,
     pub notices: Vec<Notice>,
     notifier: Option<Box<dyn Fn(Notice) + Send>>,
+}
+struct PendingPick {
+    champion: i32,
+    until: u64,
+    next_check: u64,
 }
 impl Engine {
     pub fn with_notifier(notifier: impl Fn(Notice) + Send + 'static) -> Self {
@@ -88,8 +98,10 @@ impl Engine {
     }
     pub fn disconnected(&mut self, s: &Snapshot) {
         self.finish(s, true);
-        self.pending = None;
-        self.pick_retry = Retry::default();
+        self.pending.clear();
+        self.pick_retry.clear();
+        self.next_pick_refresh = 0;
+        self.pick_rate_limit_until = 0;
     }
     fn finish(&mut self, s: &Snapshot, interrupted: bool) {
         let audit = std::mem::take(&mut self.audit);
@@ -128,12 +140,14 @@ impl Engine {
     fn reset_round(&mut self) {
         self.completed = false;
         self.game_id = 0;
-        self.pending = None;
+        self.pending.clear();
         self.side = Side::default();
-        self.pick_retry = Retry::default();
+        self.pick_retry.clear();
+        self.next_pick_refresh = 0;
+        self.pick_rate_limit_until = 0;
     }
     pub fn pending_due(&self, now: u64) -> bool {
-        self.pending.is_some_and(|(_, until)| now >= until)
+        self.pending.iter().any(|p| now >= p.next_check)
     }
     pub fn side_pending(&self) -> bool {
         self.side.side == 0 || !self.side.finished
@@ -144,6 +158,30 @@ impl Engine {
         prefs: &impl Fn() -> Preferences,
         s: &mut Snapshot,
         now: u64,
+    ) -> Result<()> {
+        self.tick_with_control(api, prefs, s, now, &Mutex::new(RoundPick::default()))
+    }
+    pub fn tick_with_control(
+        &mut self,
+        api: &mut impl Api,
+        prefs: &impl Fn() -> Preferences,
+        s: &mut Snapshot,
+        now: u64,
+        control: &Mutex<RoundPick>,
+    ) -> Result<()> {
+        let result = self.tick_inner(api, prefs, s, now, control);
+        if result.is_err() {
+            control.lock().unwrap().available = false;
+        }
+        result
+    }
+    fn tick_inner(
+        &mut self,
+        api: &mut impl Api,
+        prefs: &impl Fn() -> Preferences,
+        s: &mut Snapshot,
+        now: u64,
+        control: &Mutex<RoundPick>,
     ) -> Result<()> {
         let phase = api.get(PHASE, false)?;
         if !phase.ok() {
@@ -177,6 +215,7 @@ impl Engine {
             self.accept_retry = Retry::default();
         }
         if phase != "ChampSelect" {
+            *control.lock().unwrap() = RoundPick::default();
             self.finish(s, false);
             self.reset_round();
             s.current = 0;
@@ -232,12 +271,14 @@ impl Engine {
         }
         let game = api.get(GAME, false)?;
         if !game.ok() {
+            control.lock().unwrap().available = false;
             return Ok(());
         }
         if game.data["phase"]
             .as_str()
             .is_some_and(|v| v != "ChampSelect")
         {
+            control.lock().unwrap().available = false;
             return Ok(());
         }
         let game_id = game.data["gameData"]["gameId"]
@@ -251,6 +292,11 @@ impl Engine {
             }
             self.game_id = game_id;
         }
+        control.lock().unwrap().enter(game_id);
+        let prefs = || {
+            let saved = prefs();
+            control.lock().unwrap().effective(saved)
+        };
         let queue = &game.data["gameData"]["queue"];
         s.queue = integer(&queue["id"]);
         let mode = queue["gameMode"].as_str().unwrap_or("");
@@ -258,19 +304,47 @@ impl Engine {
         s.pick_supported = Some(supported);
         s.pick_completed = self.completed;
         let side_supported = side_supported(&game.data);
+        if !supported {
+            control.lock().unwrap().available = false;
+        }
         if !supported && !side_supported {
             return Ok(());
         }
-        let session = api.get(SESSION, self.pending_due(now))?;
+        let p = prefs();
+        // Keep observing the selection lifecycle while the local switch is off.
+        let refresh_selection = supported && now >= self.next_pick_refresh;
+        let refresh_pick = refresh_selection
+            && p.auto_pick
+            && !p.priority.is_empty()
+            && (p.always_prioritize || !self.completed);
+        let refresh_session = refresh_selection || self.pending_due(now);
+        let session = api.get(SESSION, refresh_session)?;
         if !session.ok() {
+            control.lock().unwrap().available = false;
             return Ok(());
+        }
+        if refresh_selection {
+            self.next_pick_refresh = now + 250;
+        }
+        if refresh_session {
+            for pending in &mut self.pending {
+                pending.next_check = now + 250;
+            }
         }
         let selected_game = session.data["gameId"]
             .as_i64()
             .filter(|id| *id > 0)
             .unwrap_or(0);
         if game_id > 0 && selected_game > 0 && game_id != selected_game {
+            control.lock().unwrap().available = false;
             return Ok(());
+        }
+        {
+            let mut round = control.lock().unwrap();
+            if game_id == 0 {
+                round.enter(selected_game);
+            }
+            round.available = supported && champion_changes_open(&session.data);
         }
         if side_supported {
             self.observe_side(&session.data);
@@ -279,10 +353,11 @@ impl Engine {
             self.send_side(api, now)?;
         }
         if supported {
-            self.pick(api, prefs, s, now, &session.data, &game.data)?;
+            self.pick(api, &prefs, s, now, &session.data, &game.data, refresh_pick)?;
         }
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)]
     fn pick(
         &mut self,
         api: &mut impl Api,
@@ -291,13 +366,15 @@ impl Engine {
         now: u64,
         session: &Value,
         game: &Value,
+        refresh: bool,
     ) -> Result<()> {
         let mode = game["gameData"]["queue"]["gameMode"].as_str().unwrap_or("");
         s.current = own_champion(session);
         s.bench = bench_ids(session);
         let mut p = prefs();
         self.observe(&p, s, &[]);
-        if let Some((id, until)) = self.pending {
+        for pending in std::mem::take(&mut self.pending) {
+            let id = pending.champion;
             if s.current == id {
                 self.completed = true;
                 s.pick_completed = true;
@@ -322,9 +399,8 @@ impl Engine {
                     ),
                 );
                 self.notify(format!("已抢到 {}", s.name(id)).into());
-                self.pending = None;
-            } else if now < until {
-                return Ok(());
+            } else if now < pending.until {
+                self.pending.push(pending);
             } else {
                 self.log(
                     "pick",
@@ -334,96 +410,124 @@ impl Engine {
                         s.name(id)
                     ),
                 );
-                self.pending = None;
             }
         }
         if !p.auto_pick || p.priority.is_empty() || (!p.always_prioritize && self.completed) {
             return Ok(());
         }
-        let local = session["localPlayerCellId"].as_i64();
-        let active = local.is_some_and(|v| v >= 0)
-            && session["actions"]
-                .as_array()
+        let pickable_response = if own_pick_action(session).is_some() {
+            Some(api.get(PICKABLE, refresh)?)
+        } else {
+            None
+        };
+        // The personal ARAM card pool remains swappable after locking a card.
+        // It has its own resource/event and need not appear in benchChampions.
+        let subset_response = api.get(SUBSET, refresh)?;
+        let ids = |response: Option<&crate::transport::Response>| -> Vec<i32> {
+            response
+                .filter(|r| r.ok())
+                .and_then(|r| r.data.as_array())
                 .into_iter()
                 .flatten()
-                .filter_map(Value::as_array)
-                .flatten()
-                .any(|a| {
-                    a["actorCellId"].as_i64() == local
-                        && a["type"] == "pick"
-                        && a["isInProgress"] == true
-                        && a["completed"] != true
-                });
-        let pickable = if active {
-            let r = api.get(PICKABLE, false)?;
-            if r.ok() {
-                r.data
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .map(integer)
-                    .collect()
-            } else {
-                vec![]
-            }
-        } else {
-            vec![]
+                .map(integer)
+                .filter(|id| *id > 0)
+                .collect()
         };
+        let pickable = ids(pickable_response.as_ref());
+        let subset = ids(Some(&subset_response));
         p = prefs();
         self.observe(&p, s, &pickable);
-        if !p.always_prioritize && self.completed {
+        self.observe(&p, s, &subset);
+        if (!p.always_prioritize && self.completed) || now < self.pick_rate_limit_until {
             return Ok(());
         }
-        let Some(choice) = choose(&p, s.queue, mode, session, &pickable) else {
-            return Ok(());
-        };
-        if !self.pick_retry.allowed(choice.champion, now) || prefs() != p {
-            return Ok(());
-        }
-        let phase_value = json!("ChampSelect");
-        let pickable_value = json!(pickable);
-        let mut observed = vec![(PHASE, &phase_value), (GAME, game), (SESSION, session)];
-        if active {
-            observed.push((PICKABLE, &pickable_value));
-        }
-        let Some(revision) = api.guard(&observed) else {
-            return Ok(());
-        };
-        let id = choice.champion;
-        let (method, path, body) = if let Some(action) = choice.action {
-            (
-                "PATCH",
-                format!("{SESSION}/actions/{action}"),
-                Some(json!({"championId":id,"completed":true})),
-            )
-        } else {
-            ("POST", format!("{SESSION}/bench/swap/{id}"), None)
-        };
-        self.log(
-            "pick",
-            "info",
-            format!(
-                "尝试抢取 {}（{}）· 顺位 {}。",
-                s.name(id),
-                id,
-                p.rank(id) + 1
-            ),
-        );
-        if let Some(e) = self.audit.get_mut(&id) {
-            e.attempted = true;
-            e.unconfirmed = true;
-        }
-        let result = api.write(method, &path, body, revision)?;
-        if let Some(result) = result {
-            self.pick_retry.record(now, result.ok());
+        let choices = selection_candidates(&p, s.queue, mode, session, &pickable, &subset);
+        self.pick_retry.retain(|choice, _| choices.contains(choice));
+        for choice in choices {
+            // A pending lower-priority request never holds up a better candidate.
+            // Avoid duplicate requests or downgrading an already accepted upgrade.
+            if self
+                .pending
+                .iter()
+                .any(|pending| p.rank(pending.champion) <= p.rank(choice.champion))
+                || self.pick_retry.get(&choice).is_some_and(|next| now < *next)
+            {
+                continue;
+            }
+            if prefs() != p {
+                return Ok(());
+            }
+            let phase_value = json!("ChampSelect");
+            let mut observed = vec![(PHASE, &phase_value), (GAME, game), (SESSION, session)];
+            if choice.action.is_some() && pickable.contains(&choice.champion) {
+                observed.push((PICKABLE, &pickable_response.as_ref().unwrap().data));
+            } else if subset.contains(&choice.champion)
+                && (choice.action.is_some() || !s.bench.contains(&choice.champion))
+            {
+                observed.push((SUBSET, &subset_response.data));
+            }
+            let Some(revision) = api.guard(&observed) else {
+                return Ok(());
+            };
+            let id = choice.champion;
+            let (method, path, body) = if let Some(action) = choice.action {
+                (
+                    "PATCH",
+                    format!("{SESSION}/actions/{action}"),
+                    Some(json!({"championId":id,"completed":true})),
+                )
+            } else {
+                ("POST", format!("{SESSION}/bench/swap/{id}"), None)
+            };
+            let result = match api.write(method, &path, body, revision) {
+                Ok(result) => result,
+                Err(error) => {
+                    if let Some(entry) = self.audit.get_mut(&id) {
+                        entry.attempted = true;
+                        entry.unconfirmed = true;
+                    }
+                    self.log(
+                        "pick",
+                        "failure",
+                        format!("{}的选取请求中断，结果未确认。", s.name(id)),
+                    );
+                    return Err(error);
+                }
+            };
+            let Some(result) = result else {
+                return Ok(());
+            };
+            self.log(
+                "pick",
+                "info",
+                format!(
+                    "尝试抢取 {}（{}）· 顺位 {}。",
+                    s.name(id),
+                    id,
+                    p.rank(id) + 1
+                ),
+            );
+            if let Some(e) = self.audit.get_mut(&id) {
+                e.attempted = true;
+                e.unconfirmed = true;
+            }
             if result.ok() {
-                self.pending = Some((id, now + 3000));
+                self.pick_retry.remove(&choice);
+                self.pending.push(PendingPick {
+                    champion: id,
+                    until: now + 3000,
+                    next_check: now,
+                });
                 self.log(
                     "pick",
                     "info",
                     format!("{}的请求已提交，等待归属确认。", s.name(id)),
                 );
+                break;
             } else {
+                // Retry a rejected candidate promptly without blocking another
+                // champion or the alternative API route for the same champion.
+                self.pick_retry.insert(choice, now + 250);
                 if let Some(e) = self.audit.get_mut(&id) {
                     e.unconfirmed = false;
                 }
@@ -436,6 +540,10 @@ impl Engine {
                         result.status
                     ),
                 );
+                if result.status == 429 {
+                    self.pick_rate_limit_until = now + 1000;
+                    break;
+                }
             }
         }
         Ok(())
