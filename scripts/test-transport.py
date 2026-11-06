@@ -33,13 +33,17 @@ class Fixture(http.server.ThreadingHTTPServer):
         self.selection = False
         self.selected_champion = 22
         self.countdown = 30000
+        self.selection_game = 9
+        self.flow_game = 9
+        self.round_side = 0
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(ROOT / "scripts/fixtures/loopback.pem")
         self.socket = context.wrap_socket(self.socket, server_side=True)
 
     def selection_session(self):
-        return {"gameId": 9, "localPlayerCellId": 0,
-                "myTeam": [{"cellId": 0, "championId": self.selected_champion}],
+        return {"gameId": self.selection_game, "localPlayerCellId": 0,
+                "myTeam": [{"cellId": 0, "championId": self.selected_champion, "team": self.round_side}],
+                "chatDetails": {"multiUserChatId": f"round-{self.selection_game}"},
                 "benchChampions": [{"championId": 107}], "actions": [],
                 "timer": {"phase": "PLANNING", "adjustedTimeLeftInPhase": self.countdown}}
 
@@ -80,6 +84,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.server.selection and self.path == "/lol-lobby-team-builder/champ-select/v1/session/bench/swap/107":
             self.server.selected_champion = 107
             self.reply(204, None)
+        elif (self.server.selection and self.server.round_side
+                and urllib.parse.unquote(self.path) == f"/lol-chat/v1/conversations/round-{self.server.selection_game}@server/messages"
+                and body == {"body": ("🟦 本局我方为蓝色方 - by (Catengar)" if self.server.round_side == 1 else "🟥 本局我方为红色方 - by (Catengar)"), "type": "chat"}):
+            self.reply(200, None)
         elif (self.server.early_side
                 and urllib.parse.unquote(self.path) == "/lol-chat/v1/conversations/fixture-room@lol-champ-select.pvp.net/messages"
                 and body == {"body": "🟥 本局我方为红色方 - by (Catengar)", "type": "chat"}):
@@ -141,8 +149,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.server.selection = True
             self.server.event("/lol-gameflow/v1/gameflow-phase", "ChampSelect")
             self.reply(200, None)
+        elif self.path == "/fixture/next-round":
+            self.server.selection = True
+            self.server.selection_game += 1
+            self.server.round_side = 1 if self.server.selection_game % 2 == 0 else 2
+            self.server.selected_champion = 22
+            # REST gameflow intentionally stays on the previous ID throughout
+            # this round. More frequent polling cannot repair that discrepancy.
+            self.server.event("/lol-gameflow/v1/gameflow-phase", "ChampSelect")
+            self.reply(200, None)
+        elif self.path == "/fixture/catch-up":
+            self.server.flow_game = self.server.selection_game
+            self.reply(200, None)
+        elif self.path == "/fixture/writes":
+            self.reply(200, self.server.writes)
         elif self.path == "/lol-gameflow/v1/session" and (self.server.selection or self.server.early_side):
-            self.reply(200, {"phase": "ChampSelect", "gameData": {"gameId": 9, "queue": {"id": 2400, "gameMode": "KIWI"}}})
+            self.reply(200, {"phase": "ChampSelect", "gameData": {"gameId": self.server.flow_game, "queue": {"id": 2400, "gameMode": "KIWI"}}})
         elif self.path == "/lol-lobby-team-builder/champ-select/v1/session" and self.server.selection:
             self.reply(200, self.server.selection_session())
         elif self.path == "/lol-lobby-team-builder/champ-select/v1/subset-champion-list" and self.server.selection:
@@ -175,6 +197,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.reply(200, None)
         elif self.path == "/lol-chat/v1/conversations" and self.server.early_side:
             self.reply(200, [{"id": "fixture-room@lol-champ-select.pvp.net", "type": "championSelect"}])
+        elif self.path == "/lol-chat/v1/conversations" and self.server.selection and self.server.round_side:
+            self.reply(200, [{"id": f"round-{self.server.selection_game}@server", "type": "championSelect"}])
         elif self.path == "/fixture/subset":
             message = json.dumps([8, "OnJsonApiEvent", {
                 "uri": "/lol-lobby-team-builder/champ-select/v1/subset-champion-list",
@@ -222,8 +246,8 @@ def main():
         environment = dict(os.environ, CATENGAR_TRANSPORT_PORTS=",".join(str(s.server_port) for s in servers))
         result = subprocess.run([str(cargo), "test", "--locked", "--test", "transport", "--", "--ignored"],
                                 cwd=ROOT, env=environment, timeout=180)
-        if [server.writes for server in servers] != [2, 0]:
-            raise AssertionError("exactly one champion swap and one early team-side message are expected; expired credentials must block writes")
+        if [server.writes for server in servers] != [8, 0]:
+            raise AssertionError("exactly four champion swaps and four team-side messages are expected across consecutive rounds; expired credentials must block writes")
         return result.returncode
     finally:
         for server in servers:

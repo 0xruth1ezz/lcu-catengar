@@ -68,6 +68,8 @@ struct Side {
 pub struct Engine {
     pub completed: bool,
     pub game_id: i64,
+    previous_game_id: i64,
+    gameflow_mismatch: Option<(i64, i64)>,
     pending: Vec<PendingPick>,
     next_pick_refresh: u64,
     pick_rate_limit_until: u64,
@@ -158,7 +160,11 @@ impl Engine {
     }
     fn reset_round(&mut self) {
         self.completed = false;
+        if self.game_id > 0 {
+            self.previous_game_id = self.game_id;
+        }
         self.game_id = 0;
+        self.gameflow_mismatch = None;
         self.pending.clear();
         self.side = Side::default();
         self.pick_retry.clear();
@@ -351,10 +357,41 @@ impl Engine {
             self.selection_state("已进入选人，等待对局信息同步。".into());
             return Ok(());
         }
-        let game_id = game.data["gameData"]["gameId"]
-            .as_i64()
-            .filter(|id| *id > 0)
-            .unwrap_or(0);
+        let queue = &game.data["gameData"]["queue"];
+        s.queue = integer(&queue["id"]);
+        let mode = queue["gameMode"].as_str().unwrap_or("");
+        let supported = aram(s.queue, mode);
+        s.pick_supported = Some(supported);
+        let side_supported = side_supported(&game.data);
+        if !supported {
+            control.lock().unwrap().available = false;
+            self.selection_state(format!(
+                "当前队列 {}（{}）不支持自动抢英雄。",
+                s.queue, mode
+            ));
+        }
+        if !supported && !side_supported {
+            return Ok(());
+        }
+        // gameflow can keep the previous game's ID until GAME_STARTING, even
+        // on fresh REST reads. The live selection session owns round identity.
+        let refresh_session = refresh_selection || self.pending_due(now);
+        let (session_path, session) =
+            selection_session(api, refresh_session, self.previous_game_id)?;
+        let selected_game = positive_id(&session.data["gameId"]);
+        let selection_identity = (usable_selection(&session)
+            && (selected_game == 0 || selected_game != self.previous_game_id))
+            .then_some((session_path, &session.data));
+        let flow_game = positive_id(&game.data["gameData"]["gameId"]);
+        let game_id = if selection_identity.is_some() && selected_game > 0 {
+            selected_game
+        } else if self.game_id > 0 {
+            self.game_id
+        } else if flow_game != self.previous_game_id {
+            flow_game
+        } else {
+            0
+        };
         if game_id > 0 {
             if self.game_id > 0 && game_id != self.game_id {
                 self.finish(s, false);
@@ -372,33 +409,28 @@ impl Engine {
             }
             self.game_id = game_id;
         }
+        let mismatch = (game_id > 0 && flow_game != game_id).then_some((flow_game, game_id));
+        if mismatch != self.gameflow_mismatch {
+            if let Some((flow, selected)) = mismatch {
+                self.log(
+                    "client",
+                    "info",
+                    format!("选人对局已确认：gameId={selected}；总对局接口编号={flow} 尚未同步，按当前选人会话继续。"),
+                );
+            }
+            self.gameflow_mismatch = mismatch;
+        }
         control.lock().unwrap().enter(game_id);
         let prefs = || {
             let saved = prefs();
             control.lock().unwrap().effective(saved)
         };
-        let queue = &game.data["gameData"]["queue"];
-        s.queue = integer(&queue["id"]);
-        let mode = queue["gameMode"].as_str().unwrap_or("");
-        let supported = aram(s.queue, mode);
-        s.pick_supported = Some(supported);
         s.pick_completed = self.completed;
-        let side_supported = side_supported(&game.data);
-        if !supported {
-            control.lock().unwrap().available = false;
-            self.selection_state(format!(
-                "当前队列 {}（{}）不支持自动抢英雄。",
-                s.queue, mode
-            ));
-        }
-        if !supported && !side_supported {
-            return Ok(());
-        }
         // The server's team-builder event already contains the local side when
-        // the room opens. The legacy session can stay incomplete until game start.
-        // Read this before the legacy session and its pick-specific validation.
+        // the room opens. Correlate it with the current selection before reading
+        // candidates or applying pick-specific validation.
         let early_side = if side_supported && self.side_pending() {
-            self.early_side(api, game_id, now)?
+            self.early_side(api, game_id, now, &game.data, selection_identity)?
         } else {
             false
         };
@@ -409,8 +441,6 @@ impl Engine {
             && p.auto_pick
             && !p.priority.is_empty()
             && (p.always_prioritize || !self.completed);
-        let refresh_session = refresh_selection || self.pending_due(now);
-        let (session_path, session) = selection_session(api, refresh_session, game_id)?;
         if !session.ok() {
             control.lock().unwrap().available = false;
             self.selection_state(format!(
@@ -424,11 +454,9 @@ impl Engine {
                 pending.next_check = now + 250;
             }
         }
-        let selected_game = session.data["gameId"]
-            .as_i64()
-            .filter(|id| *id > 0)
-            .unwrap_or(0);
-        if game_id > 0 && selected_game > 0 && game_id != selected_game {
+        if selected_game > 0
+            && (selected_game == self.previous_game_id || (game_id > 0 && game_id != selected_game))
+        {
             control.lock().unwrap().available = false;
             self.selection_state("选人数据仍属于上一局，等待当前对局同步。".into());
             return Ok(());
@@ -470,7 +498,7 @@ impl Engine {
             self.observe_side(&session.data);
             // Notify and send as soon as matchmaking enters champion select;
             // pickable reads and automatic picks must not hold up this notice.
-            self.send_side(api, now, false)?;
+            self.send_side(api, now, session_path, &game.data, None)?;
             if self.side.side == 0 && !self.side.waiting_logged {
                 self.side.waiting_logged = true;
                 self.log("side", "info", "已进入选人，等待客户端提供本局阵营数据。");
@@ -783,7 +811,14 @@ impl Engine {
         }
         self.side.game = session["gameId"].as_i64().unwrap_or(0);
     }
-    fn early_side(&mut self, api: &mut impl Api, game_id: i64, now: u64) -> Result<bool> {
+    fn early_side(
+        &mut self,
+        api: &mut impl Api,
+        game_id: i64,
+        now: u64,
+        game: &Value,
+        selection_identity: Option<(&str, &Value)>,
+    ) -> Result<bool> {
         let message = match api.get(TEAMBUILDER, false) {
             Ok(message) if message.ok() => message,
             _ => return Ok(false),
@@ -792,10 +827,17 @@ impl Engine {
             return Ok(false);
         };
         self.observe_side(&selection);
-        self.send_side(api, now, true)?;
+        self.send_side(api, now, TEAMBUILDER, game, selection_identity)?;
         Ok(true)
     }
-    fn send_side(&mut self, api: &mut impl Api, now: u64, early: bool) -> Result<()> {
+    fn send_side(
+        &mut self,
+        api: &mut impl Api,
+        now: u64,
+        source: &str,
+        observed_game: &Value,
+        selection_identity: Option<(&str, &Value)>,
+    ) -> Result<()> {
         if self.side.side == 0 || self.side.finished || now < self.side.next {
             return Ok(());
         }
@@ -849,18 +891,23 @@ impl Engine {
         {
             return Ok(());
         }
-        let latest_game_id = game.data["gameData"]["gameId"].as_i64().unwrap_or(0);
-        if self.side.game > 0 && latest_game_id > 0 && self.side.game != latest_game_id {
+        // The gameflow ID is allowed to lag, but a change during room discovery
+        // still invalidates this decision. Re-evaluate it on the next tick.
+        if game.data["gameData"]["gameId"] != observed_game["gameData"]["gameId"] {
             return Ok(());
         }
-        let source = if early { TEAMBUILDER } else { SESSION };
+        if let Some((path, identity)) = selection_identity {
+            let latest = api.get(path, false)?;
+            if !latest.ok() || latest.data["gameId"] != identity["gameId"] {
+                return Ok(());
+            }
+        }
         let session = api.get(source, false)?;
         if !session.ok() {
             return Ok(());
         }
-        let selected = if early {
-            let game_id = game.data["gameData"]["gameId"].as_i64().unwrap_or(0);
-            let Some(selected) = early_selection(&session.data, game_id) else {
+        let selected = if source == TEAMBUILDER {
+            let Some(selected) = early_selection(&session.data, self.side.game) else {
                 return Ok(());
             };
             selected
@@ -873,11 +920,15 @@ impl Engine {
         {
             return Ok(());
         }
-        let Some(revision) = api.guard(&[
+        let mut observed = vec![
             (PHASE, &phase.data),
             (GAME, &game.data),
             (source, &session.data),
-        ]) else {
+        ];
+        if let Some(identity) = selection_identity {
+            observed.push(identity);
+        }
+        let Some(revision) = api.guard(&observed) else {
             return Ok(());
         };
         let path = format!(
@@ -951,25 +1002,15 @@ impl Engine {
 fn selection_session(
     api: &mut impl Api,
     fresh: bool,
-    game_id: i64,
+    previous_game_id: i64,
 ) -> Result<(&'static str, Response)> {
     let primary = api.get(SESSION, fresh)?;
     let current_game = |session: &Value| {
-        let id = session["gameId"].as_i64().unwrap_or(0);
-        game_id == 0 || id == 0 || game_id == id
-    };
-    let usable = |response: &Response| {
-        let session = &response.data;
-        let local = session["localPlayerCellId"].as_i64().filter(|id| *id >= 0);
-        response.ok()
-            && current_game(session)
-            && local.is_some()
-            && session["myTeam"]
-                .as_array()
-                .is_some_and(|team| team.iter().any(|player| player["cellId"].as_i64() == local))
+        let id = positive_id(&session["gameId"]);
+        id == 0 || id != previous_game_id
     };
     // Never reopen an explicitly closed session using an older alternate copy.
-    if usable(&primary)
+    if (usable_selection(&primary) && current_game(&primary.data))
         || (primary.ok()
             && current_game(&primary.data)
             && (primary.data["timer"]["phase"] == "GAME_STARTING"
@@ -978,11 +1019,25 @@ fn selection_session(
         return Ok((SESSION, primary));
     }
     let alternate = api.get(TEAM_SESSION, fresh)?;
-    if usable(&alternate) {
+    if usable_selection(&alternate) && current_game(&alternate.data) {
         Ok((TEAM_SESSION, alternate))
     } else {
         Ok((SESSION, primary))
     }
+}
+
+fn positive_id(value: &Value) -> i64 {
+    value.as_i64().filter(|id| *id > 0).unwrap_or(0)
+}
+
+fn usable_selection(response: &Response) -> bool {
+    let session = &response.data;
+    let local = session["localPlayerCellId"].as_i64().filter(|id| *id >= 0);
+    response.ok()
+        && local.is_some()
+        && session["myTeam"]
+            .as_array()
+            .is_some_and(|team| team.iter().any(|player| player["cellId"].as_i64() == local))
 }
 
 pub fn side_supported(game: &Value) -> bool {

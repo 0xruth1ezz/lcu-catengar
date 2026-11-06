@@ -114,6 +114,62 @@ fn tls_events_reconnect_rotation_and_bounded_shutdown() {
     first.get("/fixture/lobby", true).unwrap();
     assert_eq!(first.get(PHASE, true).unwrap().data, "Lobby");
     assert_eq!(second.get(PHASE, true).unwrap().data, "Lobby");
+    // Replay consecutive selections on one live TLS/WAMP connection, with
+    // gameflow a full round behind and only the alternate session available.
+    let mut rounds = Engine::default();
+    let mut selected = Snapshot::default();
+    let one_shot = || Preferences {
+        auto_pick: true,
+        always_prioritize: false,
+        priority: vec![107],
+        ..Default::default()
+    };
+    for (round, side) in [1, 2, 1].into_iter().enumerate() {
+        let now = round as u64 * 100_000;
+        first.get("/fixture/next-round", true).unwrap();
+        wait(|| first.get(PHASE, false).unwrap().data == "ChampSelect", 5);
+        rounds
+            .tick_with_control(&mut first, &one_shot, &mut selected, now, &control)
+            .unwrap();
+        assert!(control.lock().unwrap().available);
+        assert_eq!(rounds.game_id, 10 + round as i64);
+        assert_eq!(control.lock().unwrap().game_id, rounds.game_id);
+        rounds
+            .tick_with_control(&mut first, &one_shot, &mut selected, now + 250, &control)
+            .unwrap();
+        assert_eq!(selected.swapped, round as u64 + 1);
+        assert!(rounds.completed);
+        first.get("/fixture/catch-up", true).unwrap();
+        rounds
+            .tick_with_control(&mut first, &one_shot, &mut selected, now + 500, &control)
+            .unwrap();
+        assert_eq!(
+            first.get("/fixture/writes", true).unwrap().data,
+            4 + round * 2
+        );
+        let sides: Vec<_> = rounds
+            .notices
+            .iter()
+            .filter(|n| matches!(n, Notice::TeamSide(_)))
+            .collect();
+        assert_eq!(sides.len(), round + 1);
+        assert_eq!(sides.last(), Some(&&Notice::TeamSide(side)));
+        assert_eq!(
+            rounds
+                .logs
+                .iter()
+                .filter(|entry| entry.kind == "side" && entry.level == "success")
+                .count(),
+            round + 1,
+            "the server must accept exactly one message for this room"
+        );
+        first.get("/fixture/lobby", true).unwrap();
+        assert_eq!(first.get(PHASE, true).unwrap().data, "Lobby");
+        rounds
+            .tick_with_control(&mut first, &one_shot, &mut selected, now + 750, &control)
+            .unwrap();
+        assert!(!control.lock().unwrap().available);
+    }
     first.get("/fixture/drop", true).unwrap();
     wait(|| !first.websocket.load(Ordering::Acquire), 5);
     assert_eq!(first.get(PHASE, false).unwrap().data, "Lobby");

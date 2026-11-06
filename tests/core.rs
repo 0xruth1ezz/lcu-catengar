@@ -396,7 +396,7 @@ fn stopped_round_survives_disconnect_theme_and_switch_changes() {
     assert_eq!(f.writes.len(), 2);
 }
 #[test]
-fn new_64_bit_game_id_rearms_round() {
+fn new_64_bit_selection_id_rearms_round_when_gameflow_and_phase_lag() {
     let mut f = Fake::select(22);
     let p = Preferences {
         always_prioritize: false,
@@ -408,7 +408,6 @@ fn new_64_bit_game_id_rearms_round() {
     f.values.insert(SESSION.into(), session(107));
     e.tick(&mut f, &|| p.clone(), &mut s, 100).unwrap();
     let id = 9_223_372_036_854_775_000i64;
-    f.values.get_mut(GAME).unwrap()["gameData"]["gameId"] = json!(id);
     let mut s2 = session(22);
     s2["gameId"] = json!(id);
     f.values.insert(SESSION.into(), s2);
@@ -441,12 +440,13 @@ fn stale_decision_does_not_write() {
     assert!(!e.completed);
 }
 #[test]
-fn mismatched_game_and_selection_are_ignored() {
+fn selection_identity_takes_precedence_over_lagging_gameflow() {
     let mut f = Fake::select(22);
     f.values.get_mut(SESSION).unwrap()["gameId"] = json!(10);
     let mut e = Engine::default();
     e.tick(&mut f, &prefs, &mut Snapshot::default(), 0).unwrap();
-    assert!(f.writes.is_empty());
+    assert_eq!(e.game_id, 10);
+    assert_eq!(f.writes.len(), 1);
 }
 #[test]
 fn websocket_events_win_over_older_rest_reads() {

@@ -174,6 +174,58 @@ fn stale_gameflow_cannot_hide_the_round_button_or_block_picks() {
 }
 
 #[test]
+fn stale_gameflow_id_does_not_block_consecutive_rounds_or_reset_a_reconnected_round() {
+    // The desktop log shows gameflow retaining the previous game's ID for the
+    // entire next selection. Only the champion-select session advances on time.
+    let p = Preferences {
+        always_prioritize: false,
+        ..prefs()
+    };
+    let mut f = Fake::new(22);
+    f.bench(&[107]);
+    let mut e = Engine::default();
+    let mut s = Snapshot::default();
+    let control = Mutex::new(RoundPick::default());
+    for (round, id) in [11_000_000_001_i64, 11_000_000_002, 11_000_000_003]
+        .into_iter()
+        .enumerate()
+    {
+        let now = round as u64 * 100_000;
+        f.values.insert(PHASE.into(), json!("ChampSelect"));
+        f.session()["gameId"] = json!(id);
+        f.session()["myTeam"][0]["championId"] = json!(22);
+        e.tick_with_control(&mut f, &|| p.clone(), &mut s, now, &control)
+            .unwrap();
+        assert_eq!(e.game_id, id, "use the current selection, not gameflow");
+        assert!(control.lock().unwrap().available);
+        assert_eq!(control.lock().unwrap().game_id, id);
+        assert_eq!(control.lock().unwrap().override_pick, None);
+        assert_eq!(f.writes.len(), round + 1, "each round must submit a pick");
+        f.session()["myTeam"][0]["championId"] = json!(107);
+        e.tick_with_control(&mut f, &|| p.clone(), &mut s, now + 250, &control)
+            .unwrap();
+        assert_eq!(s.swapped, round as u64 + 1);
+        assert!(e.completed);
+        // Reconnecting and late gameflow updates must preserve one-shot state.
+        e.disconnected(&s);
+        f.session()["myTeam"][0]["championId"] = json!(22);
+        for step in [500, 750] {
+            e.tick_with_control(&mut f, &|| p.clone(), &mut s, now + step, &control)
+                .unwrap();
+            assert_eq!(e.game_id, id);
+            assert!(e.completed);
+            assert_eq!(f.writes.len(), round + 1);
+            f.values.get_mut(GAME).unwrap()["gameData"]["gameId"] = json!(id);
+        }
+        control.lock().unwrap().override_pick = Some(false);
+        f.values.insert(PHASE.into(), json!("InProgress"));
+        e.tick_with_control(&mut f, &|| p.clone(), &mut s, now + 1000, &control)
+            .unwrap();
+        assert!(!control.lock().unwrap().available);
+    }
+}
+
+#[test]
 fn team_builder_session_restores_button_and_automation_when_public_session_is_unavailable() {
     const MODERN: &str = "/lol-lobby-team-builder/champ-select/v1/session";
     for incomplete in [false, true] {
@@ -513,9 +565,42 @@ fn round_pause_survives_disconnect_but_not_a_verified_phase_exit() {
         .unwrap();
     assert_eq!(*control.lock().unwrap(), RoundPick::default());
     f.values.insert(PHASE.into(), json!("ChampSelect"));
+    f.session()["gameId"] = json!(10);
     e.tick_with_control(&mut f, &prefs, &mut s, 4, &control)
         .unwrap();
     assert_eq!(f.writes.len(), 1);
+}
+
+#[test]
+fn completed_round_session_cannot_reopen_automation_or_hide_a_new_alternate_session() {
+    use catengar::transport::TEAM_SESSION;
+    let mut f = Fake::new(22);
+    let mut e = Engine::default();
+    let mut s = Snapshot::default();
+    let control = Mutex::new(RoundPick::default());
+    e.tick_with_control(&mut f, &prefs, &mut s, 0, &control)
+        .unwrap();
+    f.values.insert(PHASE.into(), json!("InProgress"));
+    e.tick_with_control(&mut f, &prefs, &mut s, 250, &control)
+        .unwrap();
+    f.values.insert(PHASE.into(), json!("ChampSelect"));
+    f.bench(&[107]);
+    e.tick_with_control(&mut f, &prefs, &mut s, 500, &control)
+        .unwrap();
+    assert!(!control.lock().unwrap().available);
+    assert!(f.writes.is_empty(), "do not replay the finished round");
+    let mut current = f.values[SESSION].clone();
+    current["gameId"] = json!(10);
+    f.values.insert(TEAM_SESSION.into(), current);
+    // The previous public session can remain closed while the alternate has
+    // already entered the next round. Its terminal state applies only to 9.
+    f.session()["timer"]["phase"] = json!("GAME_STARTING");
+    e.tick_with_control(&mut f, &prefs, &mut s, 750, &control)
+        .unwrap();
+    assert!(control.lock().unwrap().available);
+    assert_eq!(e.game_id, 10);
+    assert_eq!(f.writes.len(), 1);
+    assert_eq!(f.writes[0].1, format!("{TEAM_SESSION}/bench/swap/107"));
 }
 
 #[test]

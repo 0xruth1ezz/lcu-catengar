@@ -293,6 +293,7 @@ fn cancelled_round_allows_a_new_side_notice() {
     f.values.insert(PHASE.into(), json!("Lobby"));
     e.tick(&mut f, &Preferences::default, &mut s, 1).unwrap();
     f.values.insert(PHASE.into(), json!("ChampSelect"));
+    f.values.get_mut(SESSION).unwrap()["gameId"] = json!(10);
     f.values.get_mut(SESSION).unwrap()["myTeam"][0]["team"] = json!(2);
     e.tick(&mut f, &Preferences::default, &mut s, 2).unwrap();
     assert_eq!(f.chats().len(), 2);
@@ -391,13 +392,13 @@ fn recorded_early_team_data_notifies_before_legacy_team_or_champion_exists() {
                 .iter()
                 .position(|v| v.starts_with("notice:"))
                 .unwrap();
-            let legacy = events
+            let chat = events
                 .iter()
-                .position(|v| v == &format!("get:{SESSION}"))
+                .position(|v| v == &format!("get:{CONVERSATIONS}"))
                 .unwrap();
             assert!(
-                notice < legacy,
-                "early side must not wait for the legacy session"
+                notice < chat,
+                "early side must appear before chat discovery even without a usable legacy session"
             );
         }
     }
@@ -548,4 +549,101 @@ fn newly_joined_chat_rejection_is_retried_without_repeating_popup() {
             .iter()
             .any(|entry| entry.kind == "side" && entry.level == "success")
     );
+}
+
+#[test]
+fn stale_gameflow_id_cannot_delay_side_notices_or_chat_in_later_rounds() {
+    for source in [SESSION, catengar::transport::TEAM_SESSION, TEAMBUILDER] {
+        let mut f = Fixture::new(1);
+        let mut e = Engine::default();
+        let mut s = Snapshot::default();
+        for (round, side) in [1, 2, 1].into_iter().enumerate() {
+            let now = round as u64 * 100_000;
+            let id = 11_000_000_001_i64 + round as i64;
+            f.values.insert(PHASE.into(), json!("ChampSelect"));
+            let mut selection = Fixture::new(side).values.remove(SESSION).unwrap();
+            selection["gameId"] = json!(id);
+            if source == TEAMBUILDER {
+                early_room(&mut f, side);
+                edit_early(f.values.get_mut(TEAMBUILDER).unwrap(), |p| {
+                    p["gameId"] = json!(id)
+                });
+                selection["myTeam"][0]["team"] = json!(0);
+            }
+            f.values.insert(
+                if source == TEAMBUILDER {
+                    SESSION
+                } else {
+                    source
+                }
+                .into(),
+                selection,
+            );
+            if source == catengar::transport::TEAM_SESSION {
+                f.values.remove(SESSION);
+            }
+            e.tick(&mut f, &Preferences::default, &mut s, now).unwrap();
+            assert_eq!(f.chats().len(), round + 1, "source={source}, round={round}");
+            assert_eq!(e.notices.len(), round + 1);
+            assert_eq!(e.notices.last(), Some(&Notice::TeamSide(side)));
+            e.disconnected(&s);
+            e.tick(&mut f, &Preferences::default, &mut s, now + 250)
+                .unwrap();
+            f.values.get_mut(GAME).unwrap()["gameData"]["gameId"] = json!(id);
+            e.tick(&mut f, &Preferences::default, &mut s, now + 500)
+                .unwrap();
+            assert_eq!(
+                f.chats().len(),
+                round + 1,
+                "no duplicate after gameflow catches up"
+            );
+            assert_eq!(e.notices.len(), round + 1);
+            f.values.insert(PHASE.into(), json!("InProgress"));
+            e.tick(&mut f, &Preferences::default, &mut s, now + 750)
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn previous_round_early_event_is_ignored_even_when_gameflow_still_matches_it() {
+    let mut f = Fixture::new(0);
+    early_room(&mut f, 1);
+    let mut e = Engine::default();
+    let mut s = Snapshot::default();
+    e.tick(&mut f, &Preferences::default, &mut s, 0).unwrap();
+    f.values.insert(PHASE.into(), json!("InProgress"));
+    e.tick(&mut f, &Preferences::default, &mut s, 250).unwrap();
+    f.values.insert(PHASE.into(), json!("ChampSelect"));
+    e.tick(&mut f, &Preferences::default, &mut s, 500).unwrap();
+    assert_eq!(f.chats().len(), 1);
+    assert_eq!(e.notices, [Notice::TeamSide(1)]);
+    f.values.get_mut(SESSION).unwrap()["gameId"] = json!(10);
+    e.tick(&mut f, &Preferences::default, &mut s, 750).unwrap();
+    assert_eq!(
+        f.chats().len(),
+        1,
+        "old event must not identify the new round"
+    );
+    assert_eq!(e.notices.len(), 1);
+    edit_early(f.values.get_mut(TEAMBUILDER).unwrap(), |p| {
+        p["gameId"] = json!(10);
+        p["championSelectState"]["cells"]["alliedTeam"][4]["teamId"] = json!(2);
+    });
+    e.tick(&mut f, &Preferences::default, &mut s, 1000).unwrap();
+    assert_eq!(f.chats().len(), 2);
+    assert_eq!(e.notices, [Notice::TeamSide(1), Notice::TeamSide(2)]);
+}
+
+#[test]
+fn early_side_rechecks_the_authoritative_selection_after_room_discovery() {
+    let mut f = Fixture::new(0);
+    early_room(&mut f, 2);
+    let mut changed = f.values[SESSION].clone();
+    changed["gameId"] = json!(10);
+    f.after_conversations = Some((SESSION.into(), changed));
+    let mut e = Engine::default();
+    e.tick(&mut f, &Preferences::default, &mut Snapshot::default(), 0)
+        .unwrap();
+    assert!(f.chats().is_empty());
 }
